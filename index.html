@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1220">
+  <title>Pugmoog Chat</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <button class="brand" data-action="home" aria-label="Pugmoog Chat home">
+        <span class="brand-mark">P</span><span>Pugmoog Chat</span>
+      </button>
+      <nav>
+        <button data-action="home">Chats</button>
+        <button data-action="personal">Personal</button>
+        <button data-action="identity" class="identity-button">My ID</button>
+      </nav>
+    </header>
+
+    <main id="app" aria-live="polite">
+      <section class="center-card"><div class="spinner"></div><p>Opening chat…</p></section>
+    </main>
+  </div>
+
+  <dialog id="create-dialog">
+    <form id="create-form" class="dialog-form">
+      <button type="button" class="close" data-close aria-label="Close">×</button>
+      <p class="eyebrow">Your space</p>
+      <h2>Create a chat</h2>
+      <label>Display name<input name="displayName" maxlength="32" required autocomplete="nickname"></label>
+      <label>Chat name<input name="chatName" maxlength="50" required autocomplete="off"></label>
+      <label>Password<input name="password" type="password" minlength="4" maxlength="128" required autocomplete="new-password"></label>
+      <p class="hint">This browser can own one chat. There is no account recovery if its local data is erased.</p>
+      <button class="primary" type="submit">Create chat</button>
+    </form>
+  </dialog>
+
+  <dialog id="join-dialog">
+    <form id="join-form" class="dialog-form">
+      <button type="button" class="close" data-close aria-label="Close">×</button>
+      <p class="eyebrow">Enter a space</p>
+      <h2>Join a chat</h2>
+      <label>Display name<input name="displayName" maxlength="32" required autocomplete="nickname"></label>
+      <label>Chat name<input name="chatName" maxlength="50" required autocomplete="off"></label>
+      <label>Password<input name="password" type="password" minlength="4" maxlength="128" required autocomplete="current-password"></label>
+      <button class="primary" type="submit">Join chat</button>
+    </form>
+  </dialog>
+
+  <dialog id="identity-dialog">
+    <div class="dialog-form">
+      <button type="button" class="close" data-close aria-label="Close">×</button>
+      <p class="eyebrow">Personal address</p>
+      <h2>Your user ID</h2>
+      <button id="copy-id" class="copy-id" type="button"></button>
+      <p class="hint">Share this ID so friends can send you personal messages. Your secret identity key stays in this browser.</p>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
