@@ -52,13 +52,17 @@
   </dialog>
 
   <dialog id="identity-dialog">
-    <div class="dialog-form">
+    <form id="identity-form" class="dialog-form">
       <button type="button" class="close" data-close aria-label="Close">×</button>
-      <p class="eyebrow">Personal address</p>
-      <h2>Your user ID</h2>
+      <p class="eyebrow">This browser</p>
+      <h2>Your identity</h2>
+      <label>Your display name<input name="displayName" maxlength="32" required autocomplete="nickname"></label>
+      <p class="hint">This name is used everywhere: in every chat and personal message.</p>
+      <button class="primary" type="submit">Save display name</button>
+      <label>Your user ID</label>
       <button id="copy-id" class="copy-id" type="button"></button>
       <p class="hint">Share this ID so friends can send you personal messages. Your secret identity key stays in this browser.</p>
-    </div>
+    </form>
   </dialog>
 
   <div id="toast" class="toast" role="status"></div>

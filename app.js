@@ -3,6 +3,7 @@ const STORAGE_KEY = "pugmoog-chat-v1";
 const app = document.querySelector("#app");
 const toastNode = document.querySelector("#toast");
 const imageUrls = new Map();
+const previewUrls = new Set();
 let pollTimer = null;
 let streamController = null;
 let toastTimer = null;
@@ -97,31 +98,45 @@ function stopLive() {
   streamController = null;
   for (const url of imageUrls.values()) URL.revokeObjectURL(url);
   imageUrls.clear();
+  for (const url of previewUrls) URL.revokeObjectURL(url);
+  previewUrls.clear();
+}
+
+function chatTile(chat) {
+  const index = state.chats.indexOf(chat);
+  return `<button class="chat-tile" data-open-chat="${index}"><strong>${escapeHtml(chat.name)}</strong><small>${chat.owner ? "Owned by you" : "Joined chat"}</small></button>`;
 }
 
 function homeView() {
   stopLive();
   currentView = "home";
   activeChat = null;
+  document.body.classList.remove("chat-open");
   setActiveNav("home");
-  const chats = state.chats.map((chat, index) => `
-    <button class="chat-tile" data-open-chat="${index}">
-      <strong>${escapeHtml(chat.name)}</strong>
-      <small>${chat.owner ? "Owned by you" : "Joined chat"}</small>
-    </button>`).join("");
+  const owned = state.chats.find(chat => chat.owner);
+  const joined = state.chats.filter(chat => !chat.owner);
+  const ownedContent = owned
+    ? chatTile(owned)
+    : state.ownedChat
+      ? `<div class="empty">You own <strong>${escapeHtml(state.ownedChat)}</strong>, but its saved access is missing from this browser.</div>`
+      : '<div class="empty">You have not made a chat yet.</div>';
   app.innerHTML = `
     <section class="center-card hero">
       <h1>Chatroom</h1>
       <p>Make a chat, or join one with its name and password. Messages and images disappear after 48 hours.</p>
-      <div class="actions">
-        <button class="primary" data-action="create" ${state.ownedChat ? "disabled title='This browser already owns a chat'" : ""}>Create a chat</button>
-        <button class="secondary" data-action="join">Join a chat</button>
-      </div>
       <button class="identity-card" data-action="identity"><small>Your personal ID</small><strong>${state.userId}</strong></button>
     </section>
-    <section>
-      <div class="section-head"><h2>Your chats</h2><span class="hint">Saved only in this browser</span></div>
-      <div class="chat-grid">${chats || '<div class="empty">No chats saved yet.</div>'}</div>
+    <section class="home-chat-grid">
+      <div class="home-chat-box owned-box">
+        <h2>My chat</h2>
+        <p class="hint">This is the one chat you own.</p>
+        ${ownedContent}
+        ${state.ownedChat ? "" : '<button class="primary" data-action="create">Create a chat</button>'}
+      </div>
+      <div class="home-chat-box joined-box">
+        <div class="section-head"><div><h2>Chats I joined</h2><p class="hint">Saved only in this browser.</p></div><button class="secondary" data-action="join">Join a chat</button></div>
+        <div class="chat-grid">${joined.map(chatTile).join("") || '<div class="empty">You have not joined any chats yet.</div>'}</div>
+      </div>
     </section>`;
 }
 
@@ -145,6 +160,7 @@ async function openChat(ref) {
   stopLive();
   currentView = "chat";
   activeChat = ref;
+  document.body.classList.add("chat-open");
   setActiveNav("home");
   app.innerHTML = '<section class="center-card"><div class="spinner"></div><p>Opening chat…</p></section>';
   try {
@@ -170,7 +186,7 @@ async function openChat(ref) {
 function renderChat(chat, messages) {
   const notice = chat.aliasUsed ? `<p class="notice">This chat is now named <strong>${escapeHtml(chat.name)}</strong>. Your saved name has been updated.</p>` : "";
   app.innerHTML = `
-    <section class="panel chat-layout">
+    <section class="chat-layout">
       <div>
         <header class="chat-head">
           <div><h1>${escapeHtml(chat.name)}</h1><p>${chat.isOwner ? "You own this chat" : "Joined chat"}</p></div>
@@ -180,6 +196,7 @@ function renderChat(chat, messages) {
       </div>
       <div id="messages" class="messages"></div>
       <div>
+        ${chat.isOwner ? ownerSettings(chat) : ""}
         <form id="chat-composer" class="composer">
           <div class="composer-row">
             <label class="file-button" title="Attach image">＋<input type="file" name="image" accept="image/png,image/jpeg,image/webp"></label>
@@ -187,8 +204,8 @@ function renderChat(chat, messages) {
             <button class="primary" type="submit">Send</button>
           </div>
           <div class="composer-meta"><span id="chat-file-name">Images become JPEG ZIPs before upload</span><span id="chat-counter">0/4000</span></div>
+          <div id="chat-image-preview" class="image-preview" hidden><img alt="Attached image preview"><span></span><button class="secondary small" type="button">Clear image</button></div>
         </form>
-        ${chat.isOwner ? ownerSettings(chat) : ""}
       </div>
     </section>`;
   appendMessages(messages, activeChat.token, false);
@@ -198,7 +215,8 @@ function renderChat(chat, messages) {
   const chatText = composer.elements.namedItem("text");
   const chatImage = composer.elements.namedItem("image");
   chatText.addEventListener("input", () => document.querySelector("#chat-counter").textContent = `${chatText.value.length}/4000`);
-  chatImage.addEventListener("change", () => document.querySelector("#chat-file-name").textContent = chatImage.files[0]?.name || "Images become JPEG ZIPs before upload");
+  chatImage.addEventListener("change", () => showImagePreview(chatImage, "chat-image-preview", "chat-file-name"));
+  document.querySelector("#chat-image-preview button").addEventListener("click", () => clearImagePreview(chatImage, "chat-image-preview", "chat-file-name"));
   composer.addEventListener("submit", sendChatMessage);
   bindOwnerSettings();
 }
@@ -260,6 +278,7 @@ async function sendChatMessage(event) {
     const imageZip = image.files[0] ? await prepareImage(image.files[0]) : null;
     await api(`/chats/${encodeURIComponent(activeChat.name)}/messages`, { method: "POST", chatToken: activeChat.token, body: JSON.stringify({ text: text.value, imageZip }) });
     form.reset();
+    clearImagePreview(image, "chat-image-preview", "chat-file-name");
     document.querySelector("#chat-counter").textContent = "0/4000";
     document.querySelector("#chat-file-name").textContent = "Images become JPEG ZIPs before upload";
     await refreshChat();
@@ -270,6 +289,7 @@ async function sendChatMessage(event) {
 function messageElement(message, token, personal) {
   const node = document.createElement("article");
   node.className = `message${message.senderId === state.userId ? " mine" : ""}`;
+  tintMessage(node, message.senderId);
   const sender = document.createElement("div");
   sender.className = "sender";
   sender.textContent = message.displayName || "Unnamed";
@@ -382,6 +402,7 @@ function personalView() {
   stopLive();
   currentView = "personal";
   activeChat = null;
+  document.body.classList.remove("chat-open");
   setActiveNav("personal");
   app.innerHTML = `
     <section class="personal-layout">
@@ -393,6 +414,7 @@ function personalView() {
           <label>Message<textarea name="text" maxlength="15000" placeholder="Write a personal message"></textarea></label>
           <div class="composer-meta"><span id="pm-long-note">One message per minute</span><span id="pm-counter" class="counter">0/4000</span></div>
           <label class="file-button" title="Attach image">＋<input type="file" name="image" accept="image/png,image/jpeg,image/webp"></label>
+          <div id="pm-image-preview" class="image-preview" hidden><img alt="Attached image preview"><span></span><button class="secondary small" type="button">Clear image</button></div>
           <button class="primary" type="submit">Send message</button>
         </form>
       </div>
@@ -403,6 +425,9 @@ function personalView() {
     </section>`;
   const form = document.querySelector("#personal-form");
   form.elements.namedItem("text").addEventListener("input", updatePersonalCounter);
+  const personalImage = form.elements.namedItem("image");
+  personalImage.addEventListener("change", () => showImagePreview(personalImage, "pm-image-preview"));
+  document.querySelector("#pm-image-preview button").addEventListener("click", () => clearImagePreview(personalImage, "pm-image-preview"));
   form.addEventListener("submit", sendPersonal);
   loadPersonal();
   pollTimer = setInterval(loadPersonal, 10000);
@@ -428,6 +453,7 @@ async function sendPersonal(event) {
     const imageZip = image.files[0] ? await prepareImage(image.files[0]) : null;
     const result = await api("/personal", { method: "POST", body: JSON.stringify({ recipientId: recipient.value.trim().toUpperCase(), text: text.value, imageZip }) });
     form.reset();
+    clearImagePreview(image, "pm-image-preview");
     document.querySelector("#pm-counter").textContent = "0/4000";
     document.querySelector("#pm-counter").classList.remove("long");
     document.querySelector("#pm-long-note").textContent = "One message per minute";
@@ -450,6 +476,7 @@ async function loadPersonal() {
 function personalElement(message) {
   const node = document.createElement("article");
   node.className = "pm";
+  tintMessage(node, message.senderId);
   node.dataset.messageId = message.id;
   const head = document.createElement("div");
   head.className = "pm-head";
@@ -499,16 +526,16 @@ async function prepareImage(file) {
   const allowed = new Set(["image/png", "image/jpeg", "image/webp"]);
   if (!allowed.has(file.type)) throw new Error("Choose a PNG, JPEG, or WebP image. GIF and SVG are not allowed.");
   if (file.size > 3 * 1024 * 1024) throw new Error("Original images must be 3 MB or smaller.");
-  const bitmap = await createImageBitmap(file);
-  const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+  const decoded = await decodeImage(file);
+  const scale = Math.min(1, 1600 / Math.max(decoded.width, decoded.height));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.width = Math.max(1, Math.round(decoded.width * scale));
+  canvas.height = Math.max(1, Math.round(decoded.height * scale));
   const context = canvas.getContext("2d");
   context.fillStyle = "#fff";
   context.fillRect(0, 0, canvas.width, canvas.height);
-  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
+  context.drawImage(decoded.source, 0, 0, canvas.width, canvas.height);
+  decoded.close();
   let jpeg = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", .8));
   if (!jpeg) throw new Error("This browser could not convert the image.");
   let bytes = new Uint8Array(await jpeg.arrayBuffer());
@@ -522,6 +549,63 @@ async function prepareImage(file) {
   let binary = "";
   for (let index = 0; index < zip.length; index += 32768) binary += String.fromCharCode(...zip.subarray(index, index + 32768));
   return btoa(binary);
+}
+
+async function decodeImage(file) {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      return { source: bitmap, width: bitmap.width, height: bitmap.height, close: () => bitmap.close() };
+    } catch {}
+  }
+  const url = URL.createObjectURL(file);
+  const image = new Image();
+  try {
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = () => reject(new Error("This browser could not open that image."));
+      image.src = url;
+    });
+    return { source: image, width: image.naturalWidth, height: image.naturalHeight, close: () => URL.revokeObjectURL(url) };
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+}
+
+function showImagePreview(input, previewId, labelId) {
+  const preview = document.querySelector(`#${previewId}`);
+  const oldUrl = preview.dataset.url;
+  if (oldUrl) { URL.revokeObjectURL(oldUrl); previewUrls.delete(oldUrl); }
+  const file = input.files[0];
+  if (!file) return clearImagePreview(input, previewId, labelId);
+  const url = URL.createObjectURL(file);
+  previewUrls.add(url);
+  preview.dataset.url = url;
+  preview.querySelector("img").src = url;
+  preview.querySelector("span").textContent = file.name;
+  preview.hidden = false;
+  if (labelId) document.querySelector(`#${labelId}`).textContent = file.name;
+}
+
+function clearImagePreview(input, previewId, labelId) {
+  const preview = document.querySelector(`#${previewId}`);
+  if (!preview) return;
+  const url = preview.dataset.url;
+  if (url) { URL.revokeObjectURL(url); previewUrls.delete(url); }
+  delete preview.dataset.url;
+  preview.querySelector("img").removeAttribute("src");
+  preview.hidden = true;
+  input.value = "";
+  if (labelId) document.querySelector(`#${labelId}`).textContent = "Images become JPEG ZIPs before upload";
+}
+
+function tintMessage(node, userId) {
+  let value = 0;
+  for (const char of userId || "") value = (value * 31 + char.charCodeAt(0)) >>> 0;
+  const hue = value % 360;
+  node.style.setProperty("--sender-tint", `hsl(${hue} 70% 94%)`);
+  node.style.setProperty("--sender-accent", `hsl(${hue} 45% 42%)`);
 }
 
 function crc32(bytes) {
@@ -579,6 +663,7 @@ document.addEventListener("click", event => {
   if (action === "join") openDialog("#join-dialog");
   if (action === "identity") {
     document.querySelector("#copy-id").textContent = state.userId;
+    document.querySelector("#identity-form [name=displayName]").value = state.displayName || "";
     document.querySelector("#identity-dialog").showModal();
   }
   if (action === "refresh-personal") loadPersonal();
@@ -590,6 +675,23 @@ document.addEventListener("click", event => {
 document.querySelector("#copy-id").addEventListener("click", async () => {
   await navigator.clipboard.writeText(state.userId).catch(() => {});
   showToast("User ID copied.");
+});
+
+document.querySelector("#identity-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const form = event.target;
+  const button = form.querySelector("button[type=submit]");
+  button.disabled = true;
+  try {
+    const result = await api("/me", { method: "PATCH", body: JSON.stringify({ displayName: form.elements.namedItem("displayName").value }) });
+    state.displayName = result.displayName;
+    saveState();
+    form.closest("dialog").close();
+    showToast("Your display name was updated everywhere.");
+    if (currentView === "chat" && activeChat) await openChat(activeChat);
+    else if (currentView === "personal") await loadPersonal();
+  } catch (error) { showToast(error.message, true); }
+  finally { button.disabled = false; }
 });
 
 document.querySelector("#create-form").addEventListener("submit", async event => {
