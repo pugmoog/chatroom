@@ -85,6 +85,7 @@ db.exec(`
 `);
 
 const sseClients = new Set();
+let expiryTimer = null;
 const now = () => Date.now();
 const randomId = () => crypto.randomUUID();
 const hash = value => crypto.createHash("sha256").update(value).digest("hex");
@@ -263,6 +264,22 @@ function cleanup() {
   }
 }
 
+function scheduleExpiryCleanup() {
+  clearTimeout(expiryTimer);
+  const next = db.prepare(`SELECT MIN(expires_at) AS expiresAt FROM (
+    SELECT expires_at FROM chat_messages
+    UNION ALL
+    SELECT expires_at FROM personal_messages
+  )`).get()?.expiresAt;
+  if (!next) return;
+  const delay = Math.min(2_147_000_000, Math.max(0, next - now()) + 10);
+  expiryTimer = setTimeout(() => {
+    cleanup();
+    scheduleExpiryCleanup();
+  }, delay);
+  expiryTimer.unref();
+}
+
 function broadcast(event, target = {}) {
   const payload = `event: ${event}\ndata: ${JSON.stringify({ event, at: now(), ...target })}\n\n`;
   for (const client of sseClients) {
@@ -397,6 +414,7 @@ async function handle(req, res) {
       const id = randomId();
       try { db.prepare("INSERT INTO chat_messages(id,chat_id,sender_id,text,image_file,created_at,expires_at) VALUES(?,?,?,?,?,?,?)").run(id, auth.chat.id, user.id, text || null, imageFile, time, time + MESSAGE_LIFETIME); }
       catch (error) { if (imageFile) removeFiles([{ image_file: imageFile }]); throw error; }
+      scheduleExpiryCleanup();
       broadcast("chat-message", { chatId: auth.chat.id });
       return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME });
     }
@@ -473,6 +491,7 @@ async function handle(req, res) {
     try { db.prepare("INSERT INTO personal_messages(id,sender_id,recipient_id,text,image_file,is_long,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)")
       .run(id, user.id, recipientId, text || null, imageFile, text.length > 4000 ? 1 : 0, time, time + MESSAGE_LIFETIME); }
     catch (error) { if (imageFile) removeFiles([{ image_file: imageFile }]); throw error; }
+    scheduleExpiryCleanup();
     broadcast("personal-message", { userId: recipientId });
     return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, longCooldown: text.length > 4000 });
   }
@@ -525,4 +544,6 @@ const server = http.createServer((req, res) => {
 });
 
 setInterval(cleanup, 60000).unref();
+cleanup();
+scheduleExpiryCleanup();
 server.listen(PORT, HOST, () => console.log(`Pugmoog chat listening on http://${HOST}:${PORT}`));
