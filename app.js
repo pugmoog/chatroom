@@ -33,19 +33,23 @@ let state = loadState();
 const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 saveState();
 
-function headers(chatToken) {
-  return {
-    "Content-Type": "application/json",
-    "X-User-ID": state.userId,
-    "X-User-Secret": state.secret,
-    ...(chatToken ? { "X-Chat-Token": chatToken } : {})
-  };
+function requestBody(body, chatToken, method) {
+  let payload = {};
+  if (typeof body === "string" && body) payload = JSON.parse(body);
+  return JSON.stringify({
+    ...payload,
+    _method: method,
+    _auth: { userId: state.userId, secret: state.secret, chatToken: chatToken || null }
+  });
 }
 
 async function api(path, options = {}) {
+  const method = options.method || "GET";
   const response = await fetch(`${API}${path}`, {
-    ...options,
-    headers: { ...headers(options.chatToken), ...(options.headers || {}) }
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal: options.signal,
+    body: requestBody(options.body, options.chatToken, method)
   });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -107,8 +111,8 @@ function homeView() {
     </button>`).join("");
   app.innerHTML = `
     <section class="center-card hero">
-      <h1>Here for a while.<br>Gone in 48 hours.</h1>
-      <p>Create a private chat or join one with its name and password. Messages and images disappear permanently after two days.</p>
+      <h1>Chatroom</h1>
+      <p>Make a chat, or join one with its name and password. Messages and images disappear after 48 hours.</p>
       <div class="actions">
         <button class="primary" data-action="create" ${state.ownedChat ? "disabled title='This browser already owns a chat'" : ""}>Create a chat</button>
         <button class="secondary" data-action="join">Join a chat</button>
@@ -309,7 +313,11 @@ function appendMessages(messages, token, personal) {
 async function loadImage(filename, token) {
   if (imageUrls.has(filename)) return imageUrls.get(filename);
   try {
-    const response = await fetch(`${API}/images/${encodeURIComponent(filename)}`, { headers: headers(token) });
+    const response = await fetch(`${API}/images/${encodeURIComponent(filename)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: requestBody(null, token, "GET")
+    });
     if (!response.ok) return null;
     const url = URL.createObjectURL(await response.blob());
     imageUrls.set(filename, url);
@@ -350,7 +358,12 @@ function startChatLive(ref) {
 }
 
 async function streamEvents(ref, signal) {
-  const response = await fetch(`${API}/chats/${encodeURIComponent(ref.name)}/events`, { headers: headers(ref.token), signal });
+  const response = await fetch(`${API}/chats/${encodeURIComponent(ref.name)}/events`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: requestBody(null, ref.token, "GET"),
+    signal
+  });
   if (!response.ok || !response.body) throw new Error("Live updates unavailable");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();

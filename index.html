@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b1220">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#fffdf8">
   <title>Pugmoog Chat</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -29,9 +29,9 @@
   <dialog id="create-dialog">
     <form id="create-form" class="dialog-form">
       <button type="button" class="close" data-close aria-label="Close">×</button>
-      <p class="eyebrow">Your space</p>
+      <p class="eyebrow">Make a new chat</p>
       <h2>Create a chat</h2>
-      <label>Display name<input name="displayName" maxlength="32" required autocomplete="nickname"></label>
+      <label>Your display name<input name="displayName" maxlength="32" required autocomplete="nickname"></label>
       <label>Chat name<input name="chatName" maxlength="50" required autocomplete="off"></label>
       <label>Password<input name="password" type="password" minlength="4" maxlength="128" required autocomplete="new-password"></label>
       <p class="hint">This browser can own one chat. There is no account recovery if its local data is erased.</p>
@@ -42,9 +42,9 @@
   <dialog id="join-dialog">
     <form id="join-form" class="dialog-form">
       <button type="button" class="close" data-close aria-label="Close">×</button>
-      <p class="eyebrow">Enter a space</p>
+      <p class="eyebrow">Use a name and password</p>
       <h2>Join a chat</h2>
-      <label>Display name<input name="displayName" maxlength="32" required autocomplete="nickname"></label>
+      <label>Your display name<input name="displayName" maxlength="32" required autocomplete="nickname"></label>
       <label>Chat name<input name="chatName" maxlength="50" required autocomplete="off"></label>
       <label>Password<input name="password" type="password" minlength="4" maxlength="128" required autocomplete="current-password"></label>
       <button class="primary" type="submit">Join chat</button>

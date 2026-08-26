@@ -162,9 +162,9 @@ async function readJson(req) {
   catch { throw apiError(400, "Invalid JSON request."); }
 }
 
-function authenticate(req) {
-  const id = req.headers["x-user-id"];
-  const secret = req.headers["x-user-secret"];
+function authenticate(req, body = {}) {
+  const id = body._auth?.userId || req.headers["x-user-id"];
+  const secret = body._auth?.secret || req.headers["x-user-secret"];
   if (typeof id !== "string" || typeof secret !== "string") throw apiError(401, "Browser identity is required.");
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user || !safeEqual(hash(secret), user.secret_hash)) throw apiError(401, "Browser identity is invalid or expired.");
@@ -181,10 +181,10 @@ function resolveChat(name) {
   return { chat: alias, alias: true };
 }
 
-function authenticateChat(req, name) {
-  const user = authenticate(req);
+function authenticateChat(req, body, name) {
+  const user = authenticate(req, body);
   const { chat, alias } = resolveChat(name);
-  const token = req.headers["x-chat-token"];
+  const token = body._auth?.chatToken || req.headers["x-chat-token"];
   const membership = db.prepare("SELECT * FROM memberships WHERE chat_id = ? AND user_id = ?").get(chat.id, user.id);
   if (!membership || typeof token !== "string" || !safeEqual(hash(token), membership.token_hash) || membership.credential_version !== chat.credential_version) {
     throw apiError(401, "Chat password has changed or access has expired.", { logout: true, currentName: chat.name });
@@ -315,9 +315,10 @@ async function handle(req, res) {
   cleanup();
 
   if (req.method === "GET" && url.pathname === "/chat/api/health") return sendJson(res, 200, { ok: true });
+  const body = req.method === "POST" || req.method === "PATCH" || req.method === "DELETE" ? await readJson(req) : {};
+  const method = typeof body._method === "string" ? body._method : req.method;
 
-  if (req.method === "POST" && url.pathname === "/chat/api/identity") {
-    const body = await readJson(req);
+  if (method === "POST" && url.pathname === "/chat/api/identity") {
     if (!/^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(body.userId || "") || !/^[a-f0-9]{64}$/.test(body.secret || "")) throw apiError(400, "Invalid browser identity format.");
     const existing = db.prepare("SELECT * FROM users WHERE id=?").get(body.userId);
     if (existing && !safeEqual(existing.secret_hash, hash(body.secret))) throw apiError(409, "That browser ID already exists.");
@@ -329,23 +330,21 @@ async function handle(req, res) {
     return sendJson(res, 200, { userId: user.id, displayName: user.display_name, ownedChat: owned?.name || null });
   }
 
-  const user = authenticate(req);
+  const user = authenticate(req, body);
 
-  if (req.method === "GET" && url.pathname === "/chat/api/me") {
+  if (method === "GET" && url.pathname === "/chat/api/me") {
     const owned = db.prepare("SELECT name FROM chats WHERE owner_id=?").get(user.id);
     return sendJson(res, 200, { userId: user.id, displayName: user.display_name, ownedChat: owned?.name || null });
   }
 
-  if (req.method === "PATCH" && url.pathname === "/chat/api/me") {
-    const body = await readJson(req);
+  if (method === "PATCH" && url.pathname === "/chat/api/me") {
     const displayName = validateDisplayName(body.displayName);
     db.prepare("UPDATE users SET display_name=? WHERE id=?").run(displayName, user.id);
     broadcast("identity", { userId: user.id });
     return sendJson(res, 200, { userId: user.id, displayName });
   }
 
-  if (req.method === "POST" && url.pathname === "/chat/api/chats") {
-    const body = await readJson(req);
+  if (method === "POST" && url.pathname === "/chat/api/chats") {
     const name = validateChatName(body.name);
     const password = validatePassword(body.password);
     const displayName = validateDisplayName(body.displayName || user.display_name || "");
@@ -366,8 +365,7 @@ async function handle(req, res) {
     } catch (error) { db.exec("ROLLBACK"); throw error; }
   }
 
-  if (req.method === "POST" && url.pathname === "/chat/api/chats/join") {
-    const body = await readJson(req);
+  if (method === "POST" && url.pathname === "/chat/api/chats/join") {
     const { chat, alias } = resolveChat(body.name || "");
     const password = validatePassword(body.password);
     if (!passwordMatches(password, chat.password_salt, chat.password_hash)) throw apiError(401, "Incorrect chat password.");
@@ -381,16 +379,16 @@ async function handle(req, res) {
   if (chatMatch) {
     const requestedName = decodeURIComponent(chatMatch[1]);
     const action = chatMatch[2] || "details";
-    const auth = authenticateChat(req, requestedName);
+    const auth = authenticateChat(req, body, requestedName);
 
-    if (req.method === "GET" && action === "details") return sendJson(res, 200, { chat: chatView(auth.chat, auth.user, auth.alias) });
+    if (method === "GET" && action === "details") return sendJson(res, 200, { chat: chatView(auth.chat, auth.user, auth.alias) });
 
-    if (req.method === "GET" && action === "messages") {
+    if (method === "GET" && action === "messages") {
       const since = Math.max(0, Number(url.searchParams.get("since")) || 0);
       return sendJson(res, 200, { chat: chatView(auth.chat, auth.user, auth.alias), messages: messageRows(auth.chat.id, since) });
     }
 
-    if (req.method === "GET" && action === "events") {
+    if (method === "GET" && action === "events") {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Connection": "keep-alive", "X-Accel-Buffering": "no" });
       res.write(`event: ready\ndata: ${JSON.stringify({ chatId: auth.chat.id })}\n\n`);
       const client = { res, userId: auth.user.id, chatId: auth.chat.id };
@@ -400,8 +398,7 @@ async function handle(req, res) {
       return;
     }
 
-    if (req.method === "POST" && action === "messages") {
-      const body = await readJson(req);
+    if (method === "POST" && action === "messages") {
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (text.length > CHAT_TEXT_LIMIT) throw apiError(400, `Chat messages may not exceed ${CHAT_TEXT_LIMIT} characters.`);
       const jpeg = parseImageZip(body.imageZip || null);
@@ -421,8 +418,7 @@ async function handle(req, res) {
 
     if (auth.chat.owner_id !== user.id) throw apiError(403, "Only the chat owner may do that.");
 
-    if (req.method === "PATCH" && action === "rename") {
-      const body = await readJson(req);
+    if (method === "PATCH" && action === "rename") {
       const name = validateChatName(body.name);
       const nameKey = normalizeName(name);
       ensureNameAvailable(nameKey, auth.chat.id);
@@ -438,8 +434,7 @@ async function handle(req, res) {
       return sendJson(res, 200, { name, oldName: auth.chat.name, aliasExpiresAt: time + DAY });
     }
 
-    if (req.method === "PATCH" && action === "password") {
-      const body = await readJson(req);
+    if (method === "PATCH" && action === "password") {
       const password = validatePassword(body.password);
       const { salt, digest } = passwordRecord(password);
       const version = auth.chat.credential_version + 1;
@@ -451,7 +446,7 @@ async function handle(req, res) {
       return sendJson(res, 200, { token, credentialVersion: version });
     }
 
-    if (req.method === "DELETE" && action === "clear") {
+    if (method === "DELETE" && action === "clear") {
       const files = db.prepare("SELECT image_file FROM chat_messages WHERE chat_id=? AND image_file IS NOT NULL").all(auth.chat.id);
       db.prepare("DELETE FROM chat_messages WHERE chat_id=?").run(auth.chat.id);
       removeFiles(files);
@@ -460,7 +455,7 @@ async function handle(req, res) {
     }
   }
 
-  if (req.method === "GET" && url.pathname === "/chat/api/personal") {
+  if (method === "GET" && url.pathname === "/chat/api/personal") {
     const messages = db.prepare(`SELECT p.id,p.sender_id AS senderId,p.recipient_id AS recipientId,p.text,p.image_file AS imageFile,
       p.created_at AS createdAt,p.expires_at AS expiresAt,u.display_name AS displayName
       FROM personal_messages p JOIN users u ON u.id=p.sender_id
@@ -469,8 +464,7 @@ async function handle(req, res) {
     return sendJson(res, 200, { messages, blocked: blocked.map(row => row.userId) });
   }
 
-  if (req.method === "POST" && url.pathname === "/chat/api/personal") {
-    const body = await readJson(req);
+  if (method === "POST" && url.pathname === "/chat/api/personal") {
     const recipientId = String(body.recipientId || "").toUpperCase();
     if (recipientId === user.id) throw apiError(400, "You cannot send a personal message to yourself.");
     if (!db.prepare("SELECT 1 FROM users WHERE id=? AND last_seen>?").get(recipientId, now() - USER_LIFETIME)) throw apiError(404, "Recipient ID was not found.");
@@ -496,8 +490,7 @@ async function handle(req, res) {
     return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, longCooldown: text.length > 4000 });
   }
 
-  if (req.method === "POST" && url.pathname === "/chat/api/blocks") {
-    const body = await readJson(req);
+  if (method === "POST" && url.pathname === "/chat/api/blocks") {
     const blockedId = String(body.userId || "").toUpperCase();
     if (blockedId === user.id || !db.prepare("SELECT 1 FROM users WHERE id=?").get(blockedId)) throw apiError(400, "Invalid user ID.");
     db.prepare("INSERT OR IGNORE INTO blocks(user_id,blocked_id,created_at) VALUES(?,?,?)").run(user.id, blockedId, now());
@@ -505,13 +498,13 @@ async function handle(req, res) {
   }
 
   const blockMatch = url.pathname.match(/^\/chat\/api\/blocks\/([^/]+)$/);
-  if (req.method === "DELETE" && blockMatch) {
+  if (method === "DELETE" && blockMatch) {
     db.prepare("DELETE FROM blocks WHERE user_id=? AND blocked_id=?").run(user.id, decodeURIComponent(blockMatch[1]).toUpperCase());
     return sendJson(res, 200, { unblocked: true });
   }
 
   const imageMatch = url.pathname.match(/^\/chat\/api\/images\/([a-f0-9-]+\.jpg)$/);
-  if (req.method === "GET" && imageMatch) {
+  if (method === "GET" && imageMatch) {
     const filename = path.basename(imageMatch[1]);
     let allowed = false;
     const personal = db.prepare("SELECT 1 FROM personal_messages WHERE image_file=? AND expires_at>? AND (sender_id=? OR recipient_id=?)").get(filename, now(), user.id, user.id);
@@ -519,7 +512,7 @@ async function handle(req, res) {
     if (!allowed) {
       const chatMessage = db.prepare("SELECT chat_id FROM chat_messages WHERE image_file=? AND expires_at>?").get(filename, now());
       if (chatMessage) {
-        const token = req.headers["x-chat-token"];
+        const token = body._auth?.chatToken || req.headers["x-chat-token"];
         const chat = db.prepare("SELECT credential_version FROM chats WHERE id=?").get(chatMessage.chat_id);
         const member = db.prepare("SELECT * FROM memberships WHERE chat_id=? AND user_id=?").get(chatMessage.chat_id, user.id);
         allowed = !!(chat && member && typeof token === "string" && safeEqual(hash(token), member.token_hash) && member.credential_version === chat.credential_version);
