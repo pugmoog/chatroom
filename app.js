@@ -417,6 +417,10 @@ function personalView() {
           <div id="pm-image-preview" class="image-preview" hidden><img alt="Attached image preview"><span></span><button class="secondary small" type="button">Clear image</button></div>
           <button class="primary" type="submit">Send message</button>
         </form>
+        <details class="blocked-panel">
+          <summary>Blocked IDs</summary>
+          <div id="blocked-list" class="blocked-list"><span class="hint">Loading…</span></div>
+        </details>
       </div>
       <div class="panel inbox">
         <div class="inbox-head"><div><h2>Inbox</h2><p class="hint">Messages sent to ${state.userId}</p></div><button class="secondary small" data-action="refresh-personal">Refresh</button></div>
@@ -470,7 +474,30 @@ async function loadPersonal() {
     list.replaceChildren();
     if (!data.messages.length) list.innerHTML = '<div class="empty">No personal messages.</div>';
     else for (const message of data.messages) list.append(personalElement(message));
+    renderBlocked(data.blocked || []);
   } catch (error) { showToast(error.message, true); }
+}
+
+function renderBlocked(blocked) {
+  const list = document.querySelector("#blocked-list");
+  if (!list) return;
+  list.replaceChildren();
+  if (!blocked.length) {
+    list.innerHTML = '<span class="hint">You have not blocked anyone.</span>';
+    return;
+  }
+  for (const userId of blocked) {
+    const row = document.createElement("div");
+    row.className = "blocked-row";
+    const id = document.createElement("code");
+    id.textContent = userId;
+    const button = document.createElement("button");
+    button.className = "secondary small";
+    button.textContent = "Unblock";
+    button.addEventListener("click", () => unblockUser(userId));
+    row.append(id, button);
+    list.append(row);
+  }
 }
 
 function personalElement(message) {
@@ -512,8 +539,16 @@ function personalElement(message) {
 
 async function blockUser(userId) {
   if (!confirm(`Block ${userId} from sending future personal messages?`)) return;
-  try { await api("/blocks", { method: "POST", body: JSON.stringify({ userId }) }); showToast(`${userId} blocked.`); }
+  try { await api("/blocks", { method: "POST", body: JSON.stringify({ userId }) }); showToast(`${userId} blocked.`); await loadPersonal(); }
   catch (error) { showToast(error.message, true); }
+}
+
+async function unblockUser(userId) {
+  try {
+    await api(`/blocks/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    showToast(`${userId} unblocked.`);
+    await loadPersonal();
+  } catch (error) { showToast(error.message, true); }
 }
 
 function formatCooldown(error) {

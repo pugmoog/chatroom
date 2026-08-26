@@ -87,6 +87,11 @@ textarea { min-height: 45px; max-height: 180px; resize: vertical; }
 .personal-compose form { display: flex; flex-direction: column; gap: 12px; }
 .personal-compose label, .dialog-form label { display: flex; flex-direction: column; gap: 6px; font-weight: 700; font-size: .86rem; }
 .personal-compose .composer-meta { margin-top: -6px; }
+.blocked-panel { margin-top: 20px; padding-top: 14px; border-top: 1.5px solid #777; }
+.blocked-panel summary { cursor: pointer; font-weight: 700; }
+.blocked-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.blocked-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border: 1.5px solid #777; border-radius: 7px; background: #fff; }
+.blocked-row code { overflow-wrap: anywhere; font-size: .75rem; }
 .inbox-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .pm-list { display: flex; flex-direction: column; gap: 10px; }
 .pm { padding: 13px; border: 1.5px solid var(--sender-accent, #555); border-radius: 9px; background: var(--sender-tint, #f8f1ff); }
