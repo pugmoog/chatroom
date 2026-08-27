@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#fffdf8">
+  <title>Connect Pugmoog Chat</title>
+  <style>
+    :root { font-family: Arial, Helvetica, sans-serif; color: #202020; background: #fffdf8; }
+    * { box-sizing: border-box; }
+    body { min-height: 100svh; margin: 0; display: grid; place-items: center; padding: 22px; }
+    main { width: min(390px, 100%); padding: 28px; text-align: center; border: 2px solid #222; border-radius: 12px; background: #fff9d9; box-shadow: 4px 4px 0 #222; }
+    .mark { display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 18px; border: 2px solid #222; border-radius: 9px; background: #ffe27a; box-shadow: 2px 2px 0 #222; font-weight: 800; }
+    h1 { margin: 0 0 10px; font-size: 1.7rem; }
+    p { margin: 0; color: #555; line-height: 1.5; }
+    .error { color: #9b2635; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">P</div>
+    <h1 id="title">Connecting this device…</h1>
+    <p id="message">This window will close when Chatroom has copied your device ID.</p>
+  </main>
+  <script>
+    (() => {
+      const COOKIE_NAME = 'pugmoog_device_identity';
+      const nonce = new URLSearchParams(location.search).get('nonce') || '';
+      const title = document.querySelector('#title');
+      const message = document.querySelector('#message');
+
+      function fail(text) {
+        title.textContent = 'Could not connect';
+        message.textContent = text;
+        message.className = 'error';
+      }
+
+      function validIdentity(identity) {
+        return /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(identity?.userId || '') && /^[a-f0-9]{64}$/.test(identity?.secret || '');
+      }
+
+      function readIdentity() {
+        const item = document.cookie.split('; ').find(part => part.startsWith(`${COOKIE_NAME}=`));
+        if (!item) return null;
+        try {
+          const identity = JSON.parse(decodeURIComponent(item.slice(COOKIE_NAME.length + 1)));
+          return validIdentity(identity) ? identity : null;
+        } catch { return null; }
+      }
+
+      function saveIdentity(identity) {
+        const secure = location.protocol === 'https:' ? '; Secure' : '';
+        document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(identity))}; Path=/chatroom/; Max-Age=34560000; SameSite=Lax${secure}`;
+      }
+
+      let windowRequest = null;
+      try { windowRequest = JSON.parse(window.name || 'null'); } catch {}
+      const hasWindowRequest = windowRequest?.type === 'pugmoog-device-request' && windowRequest.nonce === nonce && validIdentity(windowRequest.identity);
+
+      if ((!window.opener && !hasWindowRequest) || !/^[a-f0-9]{32}$/.test(nonce)) {
+        fail('Open this page using the “Connect this device” button in Chatroom.');
+        return;
+      }
+
+      function deliverIdentity(proposedIdentity) {
+        let identity = readIdentity();
+        if (!identity) {
+          identity = proposedIdentity;
+          saveIdentity(identity);
+          identity = readIdentity();
+          if (!identity) {
+            fail('Cookies are disabled. Allow cookies for pugmoog.github.io, then try again.');
+            return;
+          }
+        }
+        window.name = JSON.stringify({ type: 'pugmoog-device-result', nonce, identity });
+        title.textContent = 'Connected';
+        message.textContent = 'Return to Chatroom. This window will close automatically.';
+        if (window.opener) window.opener.postMessage({ type: 'pugmoog-device-identity', nonce, identity }, location.origin);
+      }
+
+      window.addEventListener('message', event => {
+        if (event.source !== window.opener || event.origin !== location.origin || event.data?.nonce !== nonce) return;
+        if (event.data.type === 'pugmoog-device-cancel') {
+          title.textContent = 'Nothing changed';
+          message.textContent = 'You can close this window.';
+          return;
+        }
+        if (event.data.type === 'pugmoog-device-complete') {
+          title.textContent = 'Connected';
+          message.textContent = 'This website now uses your device ID.';
+          setTimeout(() => window.close(), 350);
+          return;
+        }
+        if (event.data.type !== 'pugmoog-current-identity' || !validIdentity(event.data.identity)) return;
+        deliverIdentity(event.data.identity);
+      });
+
+      if (hasWindowRequest) deliverIdentity(windowRequest.identity);
+      else window.opener.postMessage({ type: 'pugmoog-device-ready', nonce }, location.origin);
+    })();
+  </script>
+</body>
+</html>

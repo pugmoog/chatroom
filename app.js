@@ -25,9 +25,9 @@ function randomUserId() {
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.userId && saved?.secret) return { ...saved, chats: Array.isArray(saved.chats) ? saved.chats : [], contacts: Array.isArray(saved.contacts) ? saved.contacts : [] };
+    if (saved?.userId && saved?.secret) return { ...saved, chats: Array.isArray(saved.chats) ? saved.chats : [], contacts: Array.isArray(saved.contacts) ? saved.contacts : [], deviceLinked: saved.deviceLinked === true };
   } catch {}
-  return { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [] };
+  return { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [], deviceLinked: false };
 }
 
 let state = loadState();
@@ -69,12 +69,151 @@ async function establishIdentity() {
     saveState();
   } catch (error) {
     if (error.status === 409 || error.status === 401) {
-      state = { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [] };
+      state = { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [], deviceLinked: false };
       saveState();
-      await establishIdentity();
+      deviceConnectionView("The saved identity could not be verified. Connect this device again to make a new one.");
     } else throw error;
   }
 }
+
+function validIdentity(identity) {
+  return /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(identity?.userId || "") && /^[a-f0-9]{64}$/.test(identity?.secret || "");
+}
+
+function deviceConnectionView(message = "Safari keeps iframe storage separate for every website. Connect once here so Chatroom can copy this device's ID into the current website.") {
+  stopLive();
+  currentView = "device-connect";
+  activeChat = null;
+  document.body.classList.remove("chat-open");
+  setActiveNav("");
+  app.innerHTML = `
+    <section class="center-card hero">
+      <p class="eyebrow">One ID on this browser</p>
+      <h1>Connect this device</h1>
+      <p>${escapeHtml(message)}</p>
+      <div class="actions"><button class="primary" data-action="connect-device">Connect this device</button></div>
+      <p class="hint" style="margin-top:16px">A small Pugmoog window will open, connect the ID, and close itself. Your secret key is never shown to the website containing Bugmoog.</p>
+    </section>`;
+}
+
+let identityPopup = null;
+let identityNonce = null;
+let identityTimeout = null;
+let identityPoll = null;
+
+function stopIdentityConnection() {
+  clearTimeout(identityTimeout);
+  clearInterval(identityPoll);
+  identityTimeout = null;
+  identityPoll = null;
+  identityNonce = null;
+  identityPopup = null;
+}
+
+async function finishDeviceIdentity(identity) {
+  if (!identityPopup || !validIdentity(identity)) return;
+  const popup = identityPopup;
+  const nonce = identityNonce;
+  const changed = identity.userId !== state.userId || identity.secret !== state.secret;
+  const locallyOwnedChat = state.ownedChat || state.chats.find(chat => chat.owner)?.name;
+  if (changed && locallyOwnedChat) {
+    const replace = confirm(`This website currently has the ID that owns “${locallyOwnedChat}”. Connecting will replace it with this device's main ID. Continue?`);
+    if (!replace) {
+      try { popup.postMessage({ type: "pugmoog-device-cancel", nonce }, location.origin); } catch {}
+      try { popup.close(); } catch {}
+      stopIdentityConnection();
+      deviceConnectionView("Nothing was changed. Connect when you are ready to use this device's main ID here.");
+      return;
+    }
+  }
+
+  if (changed) {
+    state = { userId: identity.userId, secret: identity.secret, displayName: "", ownedChat: null, chats: [], contacts: [], deviceLinked: true };
+  } else {
+    state.deviceLinked = true;
+  }
+  saveState();
+  try { popup.postMessage({ type: "pugmoog-device-complete", nonce }, location.origin); } catch {}
+  try { popup.close(); } catch {}
+  stopIdentityConnection();
+  try {
+    await establishIdentity();
+    if (state.deviceLinked) {
+      homeView();
+      showToast(changed ? "This website now uses your device ID." : "This device ID is connected.");
+    }
+  } catch (error) {
+    deviceConnectionView(error.message);
+    showToast(error.message, true);
+  }
+}
+
+function connectDeviceIdentity() {
+  if (identityPopup && !identityPopup.closed) {
+    identityPopup.focus();
+    return;
+  }
+
+  const nonce = randomHex(16);
+  const bridgeUrl = new URL("device-identity.html", location.href);
+  bridgeUrl.search = new URLSearchParams({ nonce });
+  bridgeUrl.hash = "";
+  const popup = window.open("about:blank", "_blank", "popup,width=460,height=580");
+  if (!popup) {
+    showToast("Allow pop-ups for this page, then try again.", true);
+    return;
+  }
+
+  identityPopup = popup;
+  identityNonce = nonce;
+  try {
+    popup.name = JSON.stringify({
+      type: "pugmoog-device-request",
+      nonce,
+      identity: { userId: state.userId, secret: state.secret }
+    });
+    popup.location.replace(bridgeUrl);
+  } catch {
+    popup.close();
+    stopIdentityConnection();
+    showToast("The device window could not be opened. Try again.", true);
+    return;
+  }
+  document.querySelectorAll('[data-action="connect-device"]').forEach(button => {
+    button.disabled = true;
+    button.textContent = "Connecting…";
+  });
+  identityTimeout = setTimeout(() => {
+    stopIdentityConnection();
+    document.querySelectorAll('[data-action="connect-device"]').forEach(button => {
+      button.disabled = false;
+      button.textContent = "Connect this device";
+    });
+    showToast("The device connection timed out. Try again.", true);
+  }, 120000);
+  identityPoll = setInterval(() => {
+    if (!identityPopup) return;
+    try {
+      const result = JSON.parse(identityPopup.name || "null");
+      if (result?.type === "pugmoog-device-result" && result.nonce === identityNonce) finishDeviceIdentity(result.identity);
+    } catch {}
+  }, 200);
+}
+
+window.addEventListener("message", async event => {
+  if (!identityPopup || event.source !== identityPopup || event.origin !== location.origin || event.data?.nonce !== identityNonce) return;
+  if (event.data.type === "pugmoog-device-ready") {
+    identityPopup.postMessage({
+      type: "pugmoog-current-identity",
+      nonce: identityNonce,
+      identity: { userId: state.userId, secret: state.secret }
+    }, location.origin);
+    return;
+  }
+  if (event.data.type !== "pugmoog-device-identity" || !validIdentity(event.data.identity)) return;
+
+  await finishDeviceIdentity(event.data.identity);
+});
 
 function escapeHtml(value = "") {
   return String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -821,6 +960,10 @@ document.addEventListener("click", event => {
     document.querySelector("#identity-form [name=displayName]").value = state.displayName || "";
     document.querySelector("#identity-dialog").showModal();
   }
+  if (action === "connect-device") {
+    document.querySelector("#identity-dialog")?.close();
+    connectDeviceIdentity();
+  }
   if (action === "refresh-personal") loadPersonal();
   const chatIndex = event.target.closest("[data-open-chat]")?.dataset.openChat;
   if (chatIndex !== undefined) openChat(state.chats[Number(chatIndex)]);
@@ -890,11 +1033,17 @@ document.querySelector("#join-form").addEventListener("submit", async event => {
 });
 
 window.addEventListener("pagehide", stopLive);
-setInterval(() => api("/me").catch(() => {}), 5 * 60 * 1000);
+setInterval(() => {
+  if (state.deviceLinked) api("/me").catch(() => {});
+}, 5 * 60 * 1000);
 
 try {
-  await establishIdentity();
-  homeView();
+  if (location.hash === "#device-identity") history.replaceState(null, "", `${location.pathname}${location.search}`);
+  if (!state.deviceLinked) deviceConnectionView();
+  else {
+    await establishIdentity();
+    if (state.deviceLinked) homeView();
+  }
 } catch (error) {
   app.innerHTML = `<section class="center-card"><h1>Could not connect</h1><p>${escapeHtml(error.message)}</p><button class="secondary" onclick="location.reload()">Try again</button></section>`;
 }
