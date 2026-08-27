@@ -148,13 +148,13 @@ function apiError(status, message, extra = {}) {
 
 function cors(req, res) {
   const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.has(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
-    res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-User-ID, X-User-Secret, X-Chat-Token");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
-  }
+  if (!origin || !ALLOWED_ORIGINS.has(origin)) return false;
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, X-User-ID, X-User-Secret, X-Chat-Token");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.setHeader("Cache-Control", "no-store");
+  return true;
 }
 
 function sendJson(res, status, value) {
@@ -343,7 +343,7 @@ function replyContext(replyToId, userId) {
 }
 
 async function handle(req, res) {
-  cors(req, res);
+  if (!cors(req, res)) throw apiError(403, "This API is only available through the Pugmoog website.");
   if (req.method === "OPTIONS") return res.writeHead(204).end();
   const url = new URL(req.url, "http://localhost");
   if (!url.pathname.startsWith("/chat/api/")) throw apiError(404, "Not found.");

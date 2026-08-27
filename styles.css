@@ -88,6 +88,8 @@ textarea { min-height: 45px; max-height: 180px; resize: vertical; }
 .personal-compose h1, .inbox h2, .outbox h2, .contacts-panel h2 { margin-top: 0; }
 .personal-compose form { display: flex; flex-direction: column; gap: 12px; }
 .personal-compose label, .dialog-form label { display: flex; flex-direction: column; gap: 6px; font-weight: 700; font-size: .86rem; }
+.personal-compose label.file-button { display: grid; place-items: center; flex-direction: initial; gap: 0; padding: 0; font-size: 1.35rem; line-height: 1; }
+.personal-compose label.file-button input { padding: 0; }
 .personal-compose .composer-meta { margin-top: -6px; }
 .reply-preview { display: flex; align-items: start; justify-content: space-between; gap: 10px; padding: 10px; border: 1.5px solid #777; border-left: 5px solid #7a6a9c; border-radius: 7px; background: #f8f1ff; }
 .reply-preview[hidden] { display: none; }
