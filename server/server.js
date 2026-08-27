@@ -16,8 +16,8 @@ const USER_LIFETIME = 60 * DAY;
 const MAX_BODY = 3 * 1024 * 1024;
 const MAX_ZIP = 2 * 1024 * 1024;
 const MAX_ENCODED_ZIP = Math.ceil(MAX_ZIP * 4 / 3) + 8;
-const CHAT_TEXT_LIMIT = 4000;
-const PERSONAL_TEXT_LIMIT = 15000;
+const CHAT_TEXT_LIMIT = 2000;
+const PERSONAL_TEXT_LIMIT = 20000;
 
 fs.mkdirSync(IMAGE_DIR, { recursive: true });
 const db = new DatabaseSync(path.join(DATA_DIR, "chat.sqlite"));
@@ -84,6 +84,9 @@ db.exec(`
     PRIMARY KEY (user_id, blocked_id)
   );
 `);
+const personalColumns = new Set(db.prepare("PRAGMA table_info(personal_messages)").all().map(column => column.name));
+if (!personalColumns.has("reply_to_id")) db.exec("ALTER TABLE personal_messages ADD COLUMN reply_to_id TEXT");
+if (!personalColumns.has("reply_context")) db.exec("ALTER TABLE personal_messages ADD COLUMN reply_context TEXT");
 
 const sseClients = new Set();
 const pendingUploads = new Map();
@@ -97,6 +100,14 @@ const safeEqual = (a, b) => {
   return aa.length === bb.length && crypto.timingSafeEqual(aa, bb);
 };
 const normalizeName = value => value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase("en-US");
+
+function messageCooldownMs(length, hasImage = false) {
+  if (length === 0 && hasImage) return 5000;
+  if (length < 100) return 1000;
+  if (length <= 2000) return (length / 100) * 1000;
+  if (length <= 10000) return (20 + (length - 2000) / 30) * 1000;
+  return (20 + 8000 / 30 + (length - 10000) / 10) * 1000;
+}
 
 function validateChatName(value) {
   if (typeof value !== "string") throw apiError(400, "Chat name is required.");
@@ -321,6 +332,16 @@ function consumeImage(body, userId) {
   return parseImageZip(encoded);
 }
 
+function replyContext(replyToId, userId) {
+  if (!replyToId) return { replyToId: null, context: null };
+  const message = db.prepare(`SELECT id,text,image_file AS imageFile,reply_context AS replyContext
+    FROM personal_messages WHERE id=? AND expires_at>? AND (sender_id=? OR recipient_id=?)`).get(replyToId, now(), userId, userId);
+  if (!message) throw apiError(400, "The message you replied to is no longer available.");
+  const current = message.text || (message.imageFile ? "[Image]" : "");
+  const context = [message.replyContext, current].filter(Boolean).join("\n\n").slice(-1000);
+  return { replyToId: message.id, context };
+}
+
 async function handle(req, res) {
   cors(req, res);
   if (req.method === "OPTIONS") return res.writeHead(204).end();
@@ -437,8 +458,8 @@ async function handle(req, res) {
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (text.length > CHAT_TEXT_LIMIT) throw apiError(400, `Chat messages may not exceed ${CHAT_TEXT_LIMIT} characters.`);
       if (!text && !body.imageZip && !body.imageUploadId) throw apiError(400, "Message must contain text or an image.");
-      const last = db.prepare("SELECT MAX(created_at) AS sentAt FROM chat_messages WHERE sender_id=?").get(user.id)?.sentAt || 0;
-      const wait = 5000 - (now() - last);
+      const last = db.prepare("SELECT text,image_file AS imageFile,created_at AS sentAt FROM chat_messages WHERE sender_id=? ORDER BY created_at DESC LIMIT 1").get(user.id);
+      const wait = last ? messageCooldownMs(last.text?.length || 0, !!last.imageFile) - (now() - last.sentAt) : 0;
       if (wait > 0) throw apiError(429, "Wait before sending another chat message.", { retryAfterMs: wait });
       const jpeg = consumeImage(body, user.id);
       const imageFile = saveImage(jpeg);
@@ -491,12 +512,16 @@ async function handle(req, res) {
   }
 
   if (method === "GET" && url.pathname === "/chat/api/personal") {
-    const messages = db.prepare(`SELECT p.id,p.sender_id AS senderId,p.recipient_id AS recipientId,p.text,p.image_file AS imageFile,
-      p.created_at AS createdAt,p.expires_at AS expiresAt,u.display_name AS displayName
+    const inbox = db.prepare(`SELECT p.id,p.sender_id AS senderId,p.recipient_id AS recipientId,p.text,p.image_file AS imageFile,
+      p.reply_to_id AS replyToId,p.reply_context AS replyContext,p.created_at AS createdAt,p.expires_at AS expiresAt,u.display_name AS displayName
       FROM personal_messages p JOIN users u ON u.id=p.sender_id
       WHERE p.recipient_id=? AND p.expires_at>? ORDER BY p.created_at DESC LIMIT 500`).all(user.id, now());
+    const outbox = db.prepare(`SELECT p.id,p.sender_id AS senderId,p.recipient_id AS recipientId,p.text,p.image_file AS imageFile,
+      p.reply_to_id AS replyToId,p.reply_context AS replyContext,p.created_at AS createdAt,p.expires_at AS expiresAt,u.display_name AS recipientDisplayName
+      FROM personal_messages p JOIN users u ON u.id=p.recipient_id
+      WHERE p.sender_id=? AND p.expires_at>? ORDER BY p.created_at DESC LIMIT 500`).all(user.id, now());
     const blocked = db.prepare("SELECT blocked_id AS userId FROM blocks WHERE user_id=? ORDER BY created_at DESC").all(user.id);
-    return sendJson(res, 200, { messages, blocked: blocked.map(row => row.userId) });
+    return sendJson(res, 200, { messages: inbox, inbox, outbox, blocked: blocked.map(row => row.userId) });
   }
 
   if (method === "POST" && url.pathname === "/chat/api/personal") {
@@ -508,21 +533,23 @@ async function handle(req, res) {
     if (text.length > PERSONAL_TEXT_LIMIT) throw apiError(400, `Personal messages may not exceed ${PERSONAL_TEXT_LIMIT} characters.`);
     if (!text && !body.imageZip && !body.imageUploadId) throw apiError(400, "Message must contain text or an image.");
     const time = now();
-    const latest = db.prepare("SELECT created_at AS createdAt,is_long AS isLong FROM personal_messages WHERE sender_id=? ORDER BY created_at DESC LIMIT 1").get(user.id);
+    const latest = db.prepare("SELECT text,image_file AS imageFile,created_at AS createdAt FROM personal_messages WHERE sender_id=? ORDER BY created_at DESC LIMIT 1").get(user.id);
     if (latest) {
-      const cooldown = latest.isLong ? DAY : 60000;
+      const cooldown = messageCooldownMs(latest.text?.length || 0, !!latest.imageFile);
       const wait = cooldown - (time - latest.createdAt);
-      if (wait > 0) throw apiError(429, latest.isLong ? "A long personal message has a 24-hour cooldown." : "Wait before sending another personal message.", { retryAfterMs: wait });
+      if (wait > 0) throw apiError(429, "Wait before sending another personal message.", { retryAfterMs: wait });
     }
+    const reply = replyContext(body.replyToId || null, user.id);
     const jpeg = consumeImage(body, user.id);
     const imageFile = saveImage(jpeg);
     const id = randomId();
-    try { db.prepare("INSERT INTO personal_messages(id,sender_id,recipient_id,text,image_file,is_long,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)")
-      .run(id, user.id, recipientId, text || null, imageFile, text.length > 4000 ? 1 : 0, time, time + MESSAGE_LIFETIME); }
+    try { db.prepare("INSERT INTO personal_messages(id,sender_id,recipient_id,text,image_file,is_long,created_at,expires_at,reply_to_id,reply_context) VALUES(?,?,?,?,?,?,?,?,?,?)")
+      .run(id, user.id, recipientId, text || null, imageFile, 0, time, time + MESSAGE_LIFETIME, reply.replyToId, reply.context); }
     catch (error) { if (imageFile) removeFiles([{ image_file: imageFile }]); throw error; }
     scheduleExpiryCleanup();
     broadcast("personal-message", { userId: recipientId });
-    return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, longCooldown: text.length > 4000 });
+    const recipient = db.prepare("SELECT display_name AS displayName FROM users WHERE id=?").get(recipientId);
+    return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, recipient: { userId: recipientId, displayName: recipient?.displayName || null } });
   }
 
   if (method === "POST" && url.pathname === "/chat/api/blocks") {

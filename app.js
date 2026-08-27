@@ -25,9 +25,9 @@ function randomUserId() {
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (saved?.userId && saved?.secret) return { ...saved, chats: Array.isArray(saved.chats) ? saved.chats : [] };
+    if (saved?.userId && saved?.secret) return { ...saved, chats: Array.isArray(saved.chats) ? saved.chats : [], contacts: Array.isArray(saved.contacts) ? saved.contacts : [] };
   } catch {}
-  return { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [] };
+  return { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [] };
 }
 
 let state = loadState();
@@ -69,7 +69,7 @@ async function establishIdentity() {
     saveState();
   } catch (error) {
     if (error.status === 409 || error.status === 401) {
-      state = { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [] };
+      state = { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [] };
       saveState();
       await establishIdentity();
     } else throw error;
@@ -200,10 +200,10 @@ function renderChat(chat, messages) {
         <form id="chat-composer" class="composer">
           <div class="composer-row">
             <label class="file-button" title="Attach image">＋<input type="file" name="image" accept="image/png,image/jpeg,image/webp"></label>
-            <textarea name="text" maxlength="4000" placeholder="Write a message" aria-label="Chat message"></textarea>
+            <textarea name="text" maxlength="2000" placeholder="Write a message" aria-label="Chat message"></textarea>
             <button class="primary" type="submit">Send</button>
           </div>
-          <div class="composer-meta"><span id="chat-file-name">Images become JPEG ZIPs before upload</span><span id="chat-counter">0/4000</span></div>
+          <div class="composer-meta"><span id="chat-file-name">Images become JPEG ZIPs before upload</span><span id="chat-counter">0/2000</span></div>
           <div id="chat-image-preview" class="image-preview" hidden><img alt="Attached image preview"><span></span><button class="secondary small" type="button">Clear image</button></div>
         </form>
       </div>
@@ -214,7 +214,7 @@ function renderChat(chat, messages) {
   const composer = document.querySelector("#chat-composer");
   const chatText = composer.elements.namedItem("text");
   const chatImage = composer.elements.namedItem("image");
-  chatText.addEventListener("input", () => document.querySelector("#chat-counter").textContent = `${chatText.value.length}/4000`);
+  chatText.addEventListener("input", () => document.querySelector("#chat-counter").textContent = `${chatText.value.length}/2000`);
   chatImage.addEventListener("change", () => showImagePreview(chatImage, "chat-image-preview", "chat-file-name"));
   document.querySelector("#chat-image-preview button").addEventListener("click", () => clearImagePreview(chatImage, "chat-image-preview", "chat-file-name"));
   composer.addEventListener("submit", sendChatMessage);
@@ -279,7 +279,7 @@ async function sendChatMessage(event) {
     await api(`/chats/${encodeURIComponent(activeChat.name)}/messages`, { method: "POST", chatToken: activeChat.token, body: JSON.stringify({ text: text.value, ...imageUpload }) });
     form.reset();
     clearImagePreview(image, "chat-image-preview", "chat-file-name");
-    document.querySelector("#chat-counter").textContent = "0/4000";
+    document.querySelector("#chat-counter").textContent = "0/2000";
     document.querySelector("#chat-file-name").textContent = "Images become JPEG ZIPs before upload";
     await refreshChat();
   } catch (error) { showToast(formatCooldown(error), true); }
@@ -411,38 +411,63 @@ function personalView() {
         <p class="hint">Send directly to a browser ID. Messages still disappear after 48 hours.</p>
         <form id="personal-form">
           <label>Recipient ID<input name="recipientId" placeholder="ABCD-EFGH-JKLM-NPQR" maxlength="19" required></label>
-          <label>Message<textarea name="text" maxlength="15000" placeholder="Write a personal message"></textarea></label>
-          <div class="composer-meta"><span id="pm-long-note">One message per minute</span><span id="pm-counter" class="counter">0/4000</span></div>
+          <div id="reply-preview" class="reply-preview" hidden><div><strong>Reply context</strong><p></p></div><button class="secondary small" type="button">Clear reply</button></div>
+          <label>Message<textarea name="text" maxlength="20000" placeholder="Write a personal message"></textarea></label>
+          <div class="composer-meta"><span id="pm-cooldown">Cooldown: 1 second</span><span id="pm-counter" class="counter">0/20000</span></div>
           <label class="file-button" title="Attach image">＋<input type="file" name="image" accept="image/png,image/jpeg,image/webp"></label>
           <div id="pm-image-preview" class="image-preview" hidden><img alt="Attached image preview"><span></span><button class="secondary small" type="button">Clear image</button></div>
           <button class="primary" type="submit">Send message</button>
         </form>
-        <details class="blocked-panel">
-          <summary>Blocked IDs</summary>
-          <div id="blocked-list" class="blocked-list"><span class="hint">Loading…</span></div>
-        </details>
       </div>
       <div class="panel inbox">
         <div class="inbox-head"><div><h2>Inbox</h2><p class="hint">Messages sent to ${state.userId}</p></div><button class="secondary small" data-action="refresh-personal">Refresh</button></div>
         <div id="pm-list" class="pm-list"><div class="empty">Loading personal messages…</div></div>
       </div>
+      <div class="panel contacts-panel">
+        <h2>Contacts</h2>
+        <p class="hint">People you have sent messages to or received messages from. Saved in this browser.</p>
+        <div id="contacts-list" class="contacts-list"></div>
+      </div>
+      <div class="panel outbox">
+        <div class="inbox-head"><div><h2>Outbox</h2><p class="hint">Personal messages you sent in the last 48 hours.</p></div></div>
+        <div id="outbox-list" class="pm-list"><div class="empty">Loading sent messages…</div></div>
+      </div>
     </section>`;
   const form = document.querySelector("#personal-form");
   form.elements.namedItem("text").addEventListener("input", updatePersonalCounter);
   const personalImage = form.elements.namedItem("image");
-  personalImage.addEventListener("change", () => showImagePreview(personalImage, "pm-image-preview"));
-  document.querySelector("#pm-image-preview button").addEventListener("click", () => clearImagePreview(personalImage, "pm-image-preview"));
+  personalImage.addEventListener("change", () => { showImagePreview(personalImage, "pm-image-preview"); updatePersonalCounter(); });
+  document.querySelector("#pm-image-preview button").addEventListener("click", () => { clearImagePreview(personalImage, "pm-image-preview"); updatePersonalCounter(); });
+  document.querySelector("#reply-preview button").addEventListener("click", clearReply);
   form.addEventListener("submit", sendPersonal);
+  renderContacts();
   loadPersonal();
   pollTimer = setInterval(loadPersonal, 10000);
 }
 
-function updatePersonalCounter(event) {
-  const length = event.target.value.length;
+function updatePersonalCounter() {
+  const form = document.querySelector("#personal-form");
+  if (!form) return;
+  const length = form.elements.namedItem("text").value.length;
   const counter = document.querySelector("#pm-counter");
-  counter.textContent = `${length}/4000`;
-  counter.classList.toggle("long", length > 4000);
-  document.querySelector("#pm-long-note").textContent = length > 4000 ? "Long message: 24-hour cooldown after sending" : "One message per minute";
+  counter.textContent = `${length}/20000`;
+  counter.classList.toggle("long", length > 10000);
+  document.querySelector("#pm-cooldown").textContent = `Cooldown: ${formatDuration(messageCooldownSeconds(length, !!form.elements.namedItem("image").files[0]))}`;
+}
+
+function messageCooldownSeconds(length, hasImage = false) {
+  if (length === 0 && hasImage) return 5;
+  if (length < 100) return 1;
+  if (length <= 2000) return length / 100;
+  if (length <= 10000) return 20 + (length - 2000) / 30;
+  return 20 + 8000 / 30 + (length - 10000) / 10;
+}
+
+function formatDuration(seconds) {
+  const rounded = Math.ceil(seconds);
+  if (rounded < 60) return `${rounded} second${rounded === 1 ? "" : "s"}`;
+  const minutes = Math.ceil(rounded / 60);
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
 }
 
 async function sendPersonal(event) {
@@ -455,13 +480,16 @@ async function sendPersonal(event) {
     const text = form.elements.namedItem("text");
     const recipient = form.elements.namedItem("recipientId");
     const imageUpload = image.files[0] ? await prepareImageUpload(image.files[0]) : {};
-    const result = await api("/personal", { method: "POST", body: JSON.stringify({ recipientId: recipient.value.trim().toUpperCase(), text: text.value, ...imageUpload }) });
+    const result = await api("/personal", { method: "POST", body: JSON.stringify({ recipientId: recipient.value.trim().toUpperCase(), text: text.value, replyToId: form.dataset.replyToId || null, ...imageUpload }) });
+    upsertContact(result.recipient.userId, result.recipient.displayName);
     form.reset();
+    clearReply();
     clearImagePreview(image, "pm-image-preview");
-    document.querySelector("#pm-counter").textContent = "0/4000";
+    document.querySelector("#pm-counter").textContent = "0/20000";
     document.querySelector("#pm-counter").classList.remove("long");
-    document.querySelector("#pm-long-note").textContent = "One message per minute";
-    showToast(result.longCooldown ? "Sent. Your next personal message can be sent in 24 hours." : "Personal message sent.");
+    document.querySelector("#pm-cooldown").textContent = "Cooldown: 1 second";
+    showToast("Personal message sent.");
+    await loadPersonal();
   } catch (error) { showToast(formatCooldown(error), true); }
   finally { button.disabled = false; }
 }
@@ -470,37 +498,21 @@ async function loadPersonal() {
   if (currentView !== "personal") return;
   try {
     const data = await api("/personal");
-    const list = document.querySelector("#pm-list");
-    list.replaceChildren();
-    if (!data.messages.length) list.innerHTML = '<div class="empty">No personal messages.</div>';
-    else for (const message of data.messages) list.append(personalElement(message));
-    renderBlocked(data.blocked || []);
+    const inbox = data.inbox || data.messages || [];
+    const outbox = data.outbox || [];
+    const inboxList = document.querySelector("#pm-list");
+    const outboxList = document.querySelector("#outbox-list");
+    inboxList.replaceChildren();
+    outboxList.replaceChildren();
+    if (!inbox.length) inboxList.innerHTML = '<div class="empty">No personal messages.</div>';
+    else for (const message of inbox) inboxList.append(personalElement(message, false));
+    if (!outbox.length) outboxList.innerHTML = '<div class="empty">No sent messages.</div>';
+    else for (const message of outbox) outboxList.append(personalElement(message, true));
+    syncContacts(inbox, outbox, data.blocked || []);
   } catch (error) { showToast(error.message, true); }
 }
 
-function renderBlocked(blocked) {
-  const list = document.querySelector("#blocked-list");
-  if (!list) return;
-  list.replaceChildren();
-  if (!blocked.length) {
-    list.innerHTML = '<span class="hint">You have not blocked anyone.</span>';
-    return;
-  }
-  for (const userId of blocked) {
-    const row = document.createElement("div");
-    row.className = "blocked-row";
-    const id = document.createElement("code");
-    id.textContent = userId;
-    const button = document.createElement("button");
-    button.className = "secondary small";
-    button.textContent = "Unblock";
-    button.addEventListener("click", () => unblockUser(userId));
-    row.append(id, button);
-    list.append(row);
-  }
-}
-
-function personalElement(message) {
+function personalElement(message, sent = false) {
   const node = document.createElement("article");
   node.className = "pm";
   tintMessage(node, message.senderId);
@@ -508,26 +520,24 @@ function personalElement(message) {
   const head = document.createElement("div");
   head.className = "pm-head";
   const sender = document.createElement("strong");
-  sender.textContent = message.displayName || "Unnamed";
+  sender.textContent = sent ? `To ${message.recipientDisplayName || "Unnamed"}` : message.displayName || "Unnamed";
   const time = document.createElement("time");
   time.textContent = new Date(message.createdAt).toLocaleString();
   head.append(sender, time);
   const id = document.createElement("small");
   id.className = "user-id";
-  id.textContent = message.senderId;
+  id.textContent = sent ? message.recipientId : message.senderId;
   node.append(head, id);
+  if (message.replyContext) { const context = document.createElement("blockquote"); context.className = "reply-context"; context.textContent = message.replyContext; node.append(context); }
   if (message.text) { const body = document.createElement("p"); body.textContent = message.text; node.append(body); }
   if (message.imageFile) loadImage(message.imageFile).then(url => { if (url) { const img = new Image(); img.src = url; img.alt = "Personal message image"; img.style.maxWidth = "100%"; img.style.borderRadius = "10px"; node.append(img); } });
+  if (sent) return node;
   const actions = document.createElement("div");
   actions.className = "pm-actions";
   const reply = document.createElement("button");
   reply.className = "secondary small";
   reply.textContent = "Message back";
-  reply.onclick = () => {
-    const form = document.querySelector("#personal-form");
-    form.elements.namedItem("recipientId").value = message.senderId;
-    form.elements.namedItem("text").focus();
-  };
+  reply.onclick = () => beginReply(message);
   const block = document.createElement("button");
   block.className = "danger small";
   block.textContent = "Block ID";
@@ -537,15 +547,110 @@ function personalElement(message) {
   return node;
 }
 
+function beginReply(message) {
+  const form = document.querySelector("#personal-form");
+  form.elements.namedItem("recipientId").value = message.senderId;
+  form.dataset.replyToId = message.id;
+  const current = message.text || (message.imageFile ? "[Image]" : "");
+  const context = [message.replyContext, current].filter(Boolean).join("\n\n").slice(-1000);
+  const preview = document.querySelector("#reply-preview");
+  preview.querySelector("p").textContent = context;
+  preview.hidden = false;
+  form.elements.namedItem("text").focus();
+}
+
+function clearReply() {
+  const form = document.querySelector("#personal-form");
+  const preview = document.querySelector("#reply-preview");
+  if (form) delete form.dataset.replyToId;
+  if (preview) { preview.hidden = true; preview.querySelector("p").textContent = ""; }
+}
+
+function upsertContact(userId, displayName, blocked) {
+  if (!userId || userId === state.userId) return;
+  let contact = state.contacts.find(item => item.userId === userId);
+  if (!contact) {
+    contact = { userId, displayName: displayName || "", blocked: !!blocked, updatedAt: Date.now() };
+    state.contacts.push(contact);
+  } else {
+    if (displayName) contact.displayName = displayName;
+    if (blocked !== undefined) contact.blocked = blocked;
+    contact.updatedAt = Date.now();
+  }
+  saveState();
+}
+
+function syncContacts(inbox, outbox, blockedIds) {
+  const blocked = new Set(blockedIds);
+  for (const contact of state.contacts) contact.blocked = blocked.has(contact.userId);
+  for (const message of inbox) upsertContact(message.senderId, message.displayName, blocked.has(message.senderId));
+  for (const message of outbox) upsertContact(message.recipientId, message.recipientDisplayName, blocked.has(message.recipientId));
+  for (const userId of blocked) upsertContact(userId, "", true);
+  saveState();
+  renderContacts();
+}
+
+function setContactBlocked(userId, blocked) {
+  upsertContact(userId, "", blocked);
+  renderContacts();
+}
+
+function renderContacts() {
+  const list = document.querySelector("#contacts-list");
+  if (!list) return;
+  list.replaceChildren();
+  const contacts = [...state.contacts].sort((a, b) => (a.displayName || a.userId).localeCompare(b.displayName || b.userId));
+  if (!contacts.length) {
+    list.innerHTML = '<div class="empty">No contacts yet.</div>';
+    return;
+  }
+  for (const contact of contacts) {
+    const row = document.createElement("div");
+    row.className = "contact-row";
+    const details = document.createElement("div");
+    const name = document.createElement("strong");
+    name.textContent = contact.displayName || "Unnamed";
+    const id = document.createElement("small");
+    id.className = "user-id";
+    id.textContent = contact.userId;
+    details.append(name, id);
+    const actions = document.createElement("div");
+    actions.className = "contact-actions";
+    if (contact.blocked) {
+      const label = document.createElement("span");
+      label.className = "blocked-label";
+      label.textContent = "Blocked";
+      const button = document.createElement("button");
+      button.className = "secondary small";
+      button.textContent = "Unblock";
+      button.addEventListener("click", () => unblockUser(contact.userId));
+      actions.append(label, button);
+    } else {
+      const button = document.createElement("button");
+      button.className = "secondary small";
+      button.textContent = "Message";
+      button.addEventListener("click", () => {
+        const form = document.querySelector("#personal-form");
+        form.elements.namedItem("recipientId").value = contact.userId;
+        form.elements.namedItem("text").focus();
+      });
+      actions.append(button);
+    }
+    row.append(details, actions);
+    list.append(row);
+  }
+}
+
 async function blockUser(userId) {
   if (!confirm(`Block ${userId} from sending future personal messages?`)) return;
-  try { await api("/blocks", { method: "POST", body: JSON.stringify({ userId }) }); showToast(`${userId} blocked.`); await loadPersonal(); }
+  try { await api("/blocks", { method: "POST", body: JSON.stringify({ userId }) }); setContactBlocked(userId, true); showToast(`${userId} blocked.`); await loadPersonal(); }
   catch (error) { showToast(error.message, true); }
 }
 
 async function unblockUser(userId) {
   try {
     await api(`/blocks/${encodeURIComponent(userId)}`, { method: "DELETE" });
+    setContactBlocked(userId, false);
     showToast(`${userId} unblocked.`);
     await loadPersonal();
   } catch (error) { showToast(error.message, true); }
@@ -553,8 +658,7 @@ async function unblockUser(userId) {
 
 function formatCooldown(error) {
   if (!error.retryAfterMs) return error.message;
-  const minutes = Math.ceil(error.retryAfterMs / 60000);
-  return `${error.message} Try again in ${minutes >= 60 ? `${Math.ceil(minutes / 60)} hour(s)` : `${minutes} minute(s)`}.`;
+  return `${error.message} Try again in ${formatDuration(error.retryAfterMs / 1000)}.`;
 }
 
 async function prepareImage(file) {

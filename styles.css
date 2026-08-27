@@ -80,24 +80,30 @@ textarea { min-height: 45px; max-height: 180px; resize: vertical; }
 .settings-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 11px; margin-top: 13px; }
 .settings-grid form { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1.5px solid #777; border-radius: 8px; background: #fff; }
 .settings-grid h3 { margin: 0; font-size: .9rem; }
-.personal-layout { display: grid; grid-template-columns: minmax(280px, 350px) 1fr; gap: 17px; }
-.personal-compose, .inbox { padding: 18px; }
+.personal-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px; align-items: start; }
+.personal-compose, .inbox, .outbox, .contacts-panel { padding: 18px; }
 .personal-compose { background: #fff9d9; }
-.personal-compose h1, .inbox h2 { margin-top: 0; }
+.contacts-panel { background: #eef8ff; }
+.outbox { background: #f8f1ff; }
+.personal-compose h1, .inbox h2, .outbox h2, .contacts-panel h2 { margin-top: 0; }
 .personal-compose form { display: flex; flex-direction: column; gap: 12px; }
 .personal-compose label, .dialog-form label { display: flex; flex-direction: column; gap: 6px; font-weight: 700; font-size: .86rem; }
 .personal-compose .composer-meta { margin-top: -6px; }
-.blocked-panel { margin-top: 20px; padding-top: 14px; border-top: 1.5px solid #777; }
-.blocked-panel summary { cursor: pointer; font-weight: 700; }
-.blocked-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-.blocked-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border: 1.5px solid #777; border-radius: 7px; background: #fff; }
-.blocked-row code { overflow-wrap: anywhere; font-size: .75rem; }
+.reply-preview { display: flex; align-items: start; justify-content: space-between; gap: 10px; padding: 10px; border: 1.5px solid #777; border-left: 5px solid #7a6a9c; border-radius: 7px; background: #f8f1ff; }
+.reply-preview[hidden] { display: none; }
+.reply-preview p { max-height: 90px; margin: 4px 0 0; overflow: auto; white-space: pre-wrap; font-size: .78rem; }
 .inbox-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.pm-list { display: flex; flex-direction: column; gap: 10px; }
+.pm-list { display: flex; flex-direction: column; gap: 10px; max-height: 65svh; overflow: auto; }
 .pm { padding: 13px; border: 1.5px solid var(--sender-accent, #555); border-radius: 9px; background: var(--sender-tint, #f8f1ff); }
 .pm-head { display: flex; justify-content: space-between; gap: 12px; }
 .pm p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.reply-context { margin: 10px 0; padding: 9px 11px; border-left: 4px solid var(--sender-accent, #777); color: #555; background: rgba(255,255,255,.62); white-space: pre-wrap; overflow-wrap: anywhere; font-size: .8rem; }
 .pm-actions { display: flex; gap: 8px; margin-top: 10px; }
+.contacts-list { display: flex; flex-direction: column; gap: 9px; margin-top: 14px; }
+.contact-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px; border: 1.5px solid #555; border-radius: 8px; background: #fff; }
+.contact-row strong, .contact-row .user-id { display: block; }
+.contact-actions { display: flex; align-items: center; gap: 8px; }
+.blocked-label { color: #8b2635; font-size: .76rem; font-weight: 800; }
 .small { padding: 6px 9px; font-size: .76rem; }
 dialog { width: min(450px, calc(100% - 28px)); border: 2px solid #222; border-radius: 12px; padding: 0; color: #222; background: #fffdf8; box-shadow: 5px 5px 0 #222; }
 dialog::backdrop { background: rgba(0, 0, 0, .45); }
