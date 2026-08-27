@@ -23,12 +23,9 @@
         document.documentElement.classList.add('pugmoog-blocked');
         document.write('<style>html.pugmoog-blocked body{display:none!important}</style>');
         document.addEventListener('DOMContentLoaded', () => {
-          document.title = 'Not available';
-          document.body.innerHTML = '<main><h1>Not available</h1><p>This feature has moved into Bugmoog.</p></main>';
-          const style = document.createElement('style');
-          style.textContent = 'body{display:block!important;font-family:system-ui,sans-serif;max-width:38rem;min-height:0!important;margin:12vh auto!important;padding:1.25rem!important;color:#222!important;background:#fff!important}main{display:block!important;width:auto!important}h1{font-size:2rem;margin-bottom:.5rem}p{line-height:1.5}';
-          document.head.appendChild(style);
-          document.documentElement.classList.remove('pugmoog-blocked');
+          document.open();
+          document.write('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not available</title><style>body{font-family:system-ui,sans-serif;max-width:38rem;margin:12vh auto;padding:1.25rem;color:#222;background:#fff}h1{font-size:2rem;margin-bottom:.5rem}p{line-height:1.5}</style></head><body><main><h1>Not available</h1><p>This feature has moved into Bugmoog.</p></main></body></html>');
+          document.close();
         }, { once: true });
       }
     })();
