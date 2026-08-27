@@ -275,8 +275,8 @@ async function sendChatMessage(event) {
   try {
     const image = form.elements.namedItem("image");
     const text = form.elements.namedItem("text");
-    const imageZip = image.files[0] ? await prepareImage(image.files[0]) : null;
-    await api(`/chats/${encodeURIComponent(activeChat.name)}/messages`, { method: "POST", chatToken: activeChat.token, body: JSON.stringify({ text: text.value, imageZip }) });
+    const imageUpload = image.files[0] ? await prepareImageUpload(image.files[0]) : {};
+    await api(`/chats/${encodeURIComponent(activeChat.name)}/messages`, { method: "POST", chatToken: activeChat.token, body: JSON.stringify({ text: text.value, ...imageUpload }) });
     form.reset();
     clearImagePreview(image, "chat-image-preview", "chat-file-name");
     document.querySelector("#chat-counter").textContent = "0/4000";
@@ -454,8 +454,8 @@ async function sendPersonal(event) {
     const image = form.elements.namedItem("image");
     const text = form.elements.namedItem("text");
     const recipient = form.elements.namedItem("recipientId");
-    const imageZip = image.files[0] ? await prepareImage(image.files[0]) : null;
-    const result = await api("/personal", { method: "POST", body: JSON.stringify({ recipientId: recipient.value.trim().toUpperCase(), text: text.value, imageZip }) });
+    const imageUpload = image.files[0] ? await prepareImageUpload(image.files[0]) : {};
+    const result = await api("/personal", { method: "POST", body: JSON.stringify({ recipientId: recipient.value.trim().toUpperCase(), text: text.value, ...imageUpload }) });
     form.reset();
     clearImagePreview(image, "pm-image-preview");
     document.querySelector("#pm-counter").textContent = "0/4000";
@@ -584,6 +584,22 @@ async function prepareImage(file) {
   let binary = "";
   for (let index = 0; index < zip.length; index += 32768) binary += String.fromCharCode(...zip.subarray(index, index + 32768));
   return btoa(binary);
+}
+
+async function prepareImageUpload(file) {
+  const encoded = await prepareImage(file);
+  if (encoded.length <= 4000) return { imageZip: encoded };
+  const uploadId = crypto.randomUUID();
+  const chunkSize = 5500;
+  const chunks = [];
+  for (let index = 0; index < encoded.length; index += chunkSize) chunks.push(encoded.slice(index, index + chunkSize));
+  for (let start = 0; start < chunks.length; start += 6) {
+    await Promise.all(chunks.slice(start, start + 6).map((chunk, offset) => api(`/uploads/${uploadId}/${start + offset}`, {
+      method: "POST",
+      body: JSON.stringify({ chunk, total: chunks.length })
+    })));
+  }
+  return { imageUploadId: uploadId };
 }
 
 async function decodeImage(file) {

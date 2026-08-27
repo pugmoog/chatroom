@@ -15,6 +15,7 @@ const MESSAGE_LIFETIME = 48 * HOUR;
 const USER_LIFETIME = 60 * DAY;
 const MAX_BODY = 3 * 1024 * 1024;
 const MAX_ZIP = 2 * 1024 * 1024;
+const MAX_ENCODED_ZIP = Math.ceil(MAX_ZIP * 4 / 3) + 8;
 const CHAT_TEXT_LIMIT = 4000;
 const PERSONAL_TEXT_LIMIT = 15000;
 
@@ -85,6 +86,7 @@ db.exec(`
 `);
 
 const sseClients = new Set();
+const pendingUploads = new Map();
 let expiryTimer = null;
 const now = () => Date.now();
 const randomId = () => crypto.randomUUID();
@@ -247,6 +249,7 @@ function removeFiles(rows) {
 
 function cleanup() {
   const time = now();
+  for (const [id, upload] of pendingUploads) if (upload.createdAt < time - 10 * 60 * 1000) pendingUploads.delete(id);
   const chatExpired = db.prepare("SELECT image_file FROM chat_messages WHERE expires_at <= ? AND image_file IS NOT NULL").all(time);
   const personalExpired = db.prepare("SELECT image_file FROM personal_messages WHERE expires_at <= ? AND image_file IS NOT NULL").all(time);
   removeFiles([...chatExpired, ...personalExpired]);
@@ -307,6 +310,17 @@ function messageRows(chatId, since = 0) {
     WHERE m.chat_id=? AND m.expires_at>? AND m.created_at>? ORDER BY m.created_at ASC LIMIT 500`).all(chatId, now(), since);
 }
 
+function consumeImage(body, userId) {
+  if (!body.imageUploadId) return parseImageZip(body.imageZip || null);
+  const upload = pendingUploads.get(body.imageUploadId);
+  if (!upload || upload.userId !== userId) throw apiError(400, "Image upload is missing or expired. Attach it again.");
+  if (upload.chunks.size !== upload.total) throw apiError(400, "Image upload is incomplete. Attach it again.");
+  const encoded = Array.from({ length: upload.total }, (_, index) => upload.chunks.get(index)).join("");
+  pendingUploads.delete(body.imageUploadId);
+  if (encoded.length > MAX_ENCODED_ZIP) throw apiError(413, "Final image ZIP must be 2 MB or smaller.");
+  return parseImageZip(encoded);
+}
+
 async function handle(req, res) {
   cors(req, res);
   if (req.method === "OPTIONS") return res.writeHead(204).end();
@@ -331,6 +345,27 @@ async function handle(req, res) {
   }
 
   const user = authenticate(req, body);
+
+  const uploadMatch = url.pathname.match(/^\/chat\/api\/uploads\/([a-f0-9-]{36})\/(\d+)$/);
+  if (method === "POST" && uploadMatch) {
+    const uploadId = uploadMatch[1];
+    const index = Number(uploadMatch[2]);
+    const total = Number(body.total);
+    const chunk = body.chunk;
+    if (!Number.isInteger(index) || !Number.isInteger(total) || total < 1 || total > 600 || index < 0 || index >= total) throw apiError(400, "Invalid image chunk.");
+    if (typeof chunk !== "string" || chunk.length < 1 || chunk.length > 5500 || !/^[A-Za-z0-9+/=]+$/.test(chunk)) throw apiError(400, "Invalid image chunk.");
+    let upload = pendingUploads.get(uploadId);
+    if (!upload) {
+      if (pendingUploads.size >= 100) throw apiError(503, "Too many images are uploading. Try again shortly.");
+      upload = { userId: user.id, total, chunks: new Map(), createdAt: now() };
+      pendingUploads.set(uploadId, upload);
+    }
+    if (upload.userId !== user.id || upload.total !== total) throw apiError(403, "Image upload does not belong to this browser.");
+    upload.chunks.set(index, chunk);
+    const size = [...upload.chunks.values()].reduce((sum, value) => sum + value.length, 0);
+    if (size > MAX_ENCODED_ZIP) { pendingUploads.delete(uploadId); throw apiError(413, "Final image ZIP must be 2 MB or smaller."); }
+    return sendJson(res, 200, { received: index, total });
+  }
 
   if (method === "GET" && url.pathname === "/chat/api/me") {
     const owned = db.prepare("SELECT name FROM chats WHERE owner_id=?").get(user.id);
@@ -401,11 +436,11 @@ async function handle(req, res) {
     if (method === "POST" && action === "messages") {
       const text = typeof body.text === "string" ? body.text.trim() : "";
       if (text.length > CHAT_TEXT_LIMIT) throw apiError(400, `Chat messages may not exceed ${CHAT_TEXT_LIMIT} characters.`);
-      const jpeg = parseImageZip(body.imageZip || null);
-      if (!text && !jpeg) throw apiError(400, "Message must contain text or an image.");
+      if (!text && !body.imageZip && !body.imageUploadId) throw apiError(400, "Message must contain text or an image.");
       const last = db.prepare("SELECT MAX(created_at) AS sentAt FROM chat_messages WHERE sender_id=?").get(user.id)?.sentAt || 0;
       const wait = 5000 - (now() - last);
       if (wait > 0) throw apiError(429, "Wait before sending another chat message.", { retryAfterMs: wait });
+      const jpeg = consumeImage(body, user.id);
       const imageFile = saveImage(jpeg);
       const time = now();
       const id = randomId();
@@ -471,8 +506,7 @@ async function handle(req, res) {
     if (db.prepare("SELECT 1 FROM blocks WHERE user_id=? AND blocked_id=?").get(recipientId, user.id)) throw apiError(403, "This recipient is not accepting your messages.");
     const text = typeof body.text === "string" ? body.text.trim() : "";
     if (text.length > PERSONAL_TEXT_LIMIT) throw apiError(400, `Personal messages may not exceed ${PERSONAL_TEXT_LIMIT} characters.`);
-    const jpeg = parseImageZip(body.imageZip || null);
-    if (!text && !jpeg) throw apiError(400, "Message must contain text or an image.");
+    if (!text && !body.imageZip && !body.imageUploadId) throw apiError(400, "Message must contain text or an image.");
     const time = now();
     const latest = db.prepare("SELECT created_at AS createdAt,is_long AS isLong FROM personal_messages WHERE sender_id=? ORDER BY created_at DESC LIMIT 1").get(user.id);
     if (latest) {
@@ -480,6 +514,7 @@ async function handle(req, res) {
       const wait = cooldown - (time - latest.createdAt);
       if (wait > 0) throw apiError(429, latest.isLong ? "A long personal message has a 24-hour cooldown." : "Wait before sending another personal message.", { retryAfterMs: wait });
     }
+    const jpeg = consumeImage(body, user.id);
     const imageFile = saveImage(jpeg);
     const id = randomId();
     try { db.prepare("INSERT INTO personal_messages(id,sender_id,recipient_id,text,image_file,is_long,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)")
