@@ -26,6 +26,11 @@
   <script>
     (() => {
       const COOKIE_NAME = 'pugmoog_device_identity';
+      const STORAGE_KEY = 'pugmoog-device-identity-v1';
+      const ALLOWED_OPENERS = new Set([
+        'https://pugmoog.github.io',
+        'https://d3txi12i3pqbxm.cloudfront.net'
+      ]);
       const nonce = new URLSearchParams(location.search).get('nonce') || '';
       const title = document.querySelector('#title');
       const message = document.querySelector('#message');
@@ -41,22 +46,33 @@
       }
 
       function readIdentity() {
+        try {
+          const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+          if (validIdentity(stored)) return stored;
+        } catch {}
         const item = document.cookie.split('; ').find(part => part.startsWith(`${COOKIE_NAME}=`));
         if (!item) return null;
         try {
           const identity = JSON.parse(decodeURIComponent(item.slice(COOKIE_NAME.length + 1)));
-          return validIdentity(identity) ? identity : null;
+          if (!validIdentity(identity)) return null;
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(identity)); } catch {}
+          return identity;
         } catch { return null; }
       }
 
       function saveIdentity(identity) {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(identity)); } catch {}
         const secure = location.protocol === 'https:' ? '; Secure' : '';
-        document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(identity))}; Path=/chatroom/; Max-Age=34560000; SameSite=Lax${secure}`;
+        document.cookie = `${COOKIE_NAME}=${encodeURIComponent(JSON.stringify(identity))}; Path=/; Max-Age=34560000; SameSite=Lax${secure}`;
       }
+
+      const storedIdentity = readIdentity();
+      if (storedIdentity) saveIdentity(storedIdentity);
 
       let windowRequest = null;
       try { windowRequest = JSON.parse(window.name || 'null'); } catch {}
-      const hasWindowRequest = windowRequest?.type === 'pugmoog-device-request' && windowRequest.nonce === nonce && validIdentity(windowRequest.identity);
+      const openerOrigin = ALLOWED_OPENERS.has(windowRequest?.openerOrigin) ? windowRequest.openerOrigin : '';
+      const hasWindowRequest = windowRequest?.type === 'pugmoog-device-request' && windowRequest.nonce === nonce && openerOrigin && validIdentity(windowRequest.identity);
 
       if ((!window.opener && !hasWindowRequest) || !/^[a-f0-9]{32}$/.test(nonce)) {
         fail('Open this page using the “Connect this device” button in Chatroom.');
@@ -67,21 +83,21 @@
         let identity = readIdentity();
         if (!identity) {
           identity = proposedIdentity;
-          saveIdentity(identity);
-          identity = readIdentity();
-          if (!identity) {
-            fail('Cookies are disabled. Allow cookies for pugmoog.github.io, then try again.');
-            return;
-          }
+        }
+        saveIdentity(identity);
+        identity = readIdentity();
+        if (!identity) {
+          fail('Browser storage is disabled. Allow website data for pugmoog.github.io, then try again.');
+          return;
         }
         window.name = JSON.stringify({ type: 'pugmoog-device-result', nonce, identity });
         title.textContent = 'Connected';
         message.textContent = 'Return to Chatroom. This window will close automatically.';
-        if (window.opener) window.opener.postMessage({ type: 'pugmoog-device-identity', nonce, identity }, location.origin);
+        if (window.opener) window.opener.postMessage({ type: 'pugmoog-device-identity', nonce, identity }, openerOrigin);
       }
 
       window.addEventListener('message', event => {
-        if (event.source !== window.opener || event.origin !== location.origin || event.data?.nonce !== nonce) return;
+        if (event.source !== window.opener || event.origin !== openerOrigin || event.data?.nonce !== nonce) return;
         if (event.data.type === 'pugmoog-device-cancel') {
           title.textContent = 'Nothing changed';
           message.textContent = 'You can close this window.';
@@ -98,7 +114,7 @@
       });
 
       if (hasWindowRequest) deliverIdentity(windowRequest.identity);
-      else window.opener.postMessage({ type: 'pugmoog-device-ready', nonce }, location.origin);
+      else window.opener.postMessage({ type: 'pugmoog-device-ready', nonce }, openerOrigin);
     })();
   </script>
 </body>

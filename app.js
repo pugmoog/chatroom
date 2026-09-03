@@ -1,5 +1,7 @@
-const API = "https://d3txi12i3pqbxm.cloudfront.net/chat/api";
+const API = "https://d3txi12i3pqbxm.cloudfront.net/chet/chat/api";
 const STORAGE_KEY = "pugmoog-chat-v1";
+const IDENTITY_COOKIE_NAME = "pugmoog_device_identity";
+const IDENTITY_BRIDGE_ORIGIN = "https://pugmoog.github.io";
 const app = document.querySelector("#app");
 const toastNode = document.querySelector("#toast");
 const imageUrls = new Map();
@@ -22,16 +24,36 @@ function randomUserId() {
   return [0, 4, 8, 12].map(index => chars.slice(index, index + 4).join("")).join("-");
 }
 
+function readIdentityCookie() {
+  const item = document.cookie.split("; ").find(part => part.startsWith(`${IDENTITY_COOKIE_NAME}=`));
+  if (!item) return null;
+  try {
+    const identity = JSON.parse(decodeURIComponent(item.slice(IDENTITY_COOKIE_NAME.length + 1)));
+    return validIdentity(identity) ? identity : null;
+  } catch { return null; }
+}
+
+function refreshIdentityCookie(identity) {
+  if (!validIdentity(identity)) return;
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${IDENTITY_COOKIE_NAME}=${encodeURIComponent(JSON.stringify(identity))}; Path=/; Max-Age=34560000; SameSite=Lax${secure}`;
+}
+
 function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
     if (saved?.userId && saved?.secret) return { ...saved, chats: Array.isArray(saved.chats) ? saved.chats : [], contacts: Array.isArray(saved.contacts) ? saved.contacts : [], deviceLinked: saved.deviceLinked === true };
   } catch {}
+  const cookieIdentity = readIdentityCookie();
+  if (cookieIdentity) return { ...cookieIdentity, displayName: "", ownedChat: null, chats: [], contacts: [], deviceLinked: true };
   return { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [], deviceLinked: false };
 }
 
 let state = loadState();
-const saveState = () => localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+const saveState = () => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  refreshIdentityCookie(state);
+};
 saveState();
 
 function requestBody(body, chatToken, method) {
@@ -119,7 +141,7 @@ async function finishDeviceIdentity(identity) {
   if (changed && locallyOwnedChat) {
     const replace = confirm(`This website currently has the ID that owns “${locallyOwnedChat}”. Connecting will replace it with this device's main ID. Continue?`);
     if (!replace) {
-      try { popup.postMessage({ type: "pugmoog-device-cancel", nonce }, location.origin); } catch {}
+      try { popup.postMessage({ type: "pugmoog-device-cancel", nonce }, IDENTITY_BRIDGE_ORIGIN); } catch {}
       try { popup.close(); } catch {}
       stopIdentityConnection();
       deviceConnectionView("Nothing was changed. Connect when you are ready to use this device's main ID here.");
@@ -133,7 +155,7 @@ async function finishDeviceIdentity(identity) {
     state.deviceLinked = true;
   }
   saveState();
-  try { popup.postMessage({ type: "pugmoog-device-complete", nonce }, location.origin); } catch {}
+  try { popup.postMessage({ type: "pugmoog-device-complete", nonce }, IDENTITY_BRIDGE_ORIGIN); } catch {}
   try { popup.close(); } catch {}
   stopIdentityConnection();
   try {
@@ -155,7 +177,7 @@ function connectDeviceIdentity() {
   }
 
   const nonce = randomHex(16);
-  const bridgeUrl = new URL("device-identity.html", location.href);
+  const bridgeUrl = new URL("/chatroom/device-identity.html", IDENTITY_BRIDGE_ORIGIN);
   bridgeUrl.search = new URLSearchParams({ nonce });
   bridgeUrl.hash = "";
   const popup = window.open("about:blank", "_blank", "popup,width=460,height=580");
@@ -170,6 +192,7 @@ function connectDeviceIdentity() {
     popup.name = JSON.stringify({
       type: "pugmoog-device-request",
       nonce,
+      openerOrigin: location.origin,
       identity: { userId: state.userId, secret: state.secret }
     });
     popup.location.replace(bridgeUrl);
@@ -201,13 +224,13 @@ function connectDeviceIdentity() {
 }
 
 window.addEventListener("message", async event => {
-  if (!identityPopup || event.source !== identityPopup || event.origin !== location.origin || event.data?.nonce !== identityNonce) return;
+  if (!identityPopup || event.source !== identityPopup || event.origin !== IDENTITY_BRIDGE_ORIGIN || event.data?.nonce !== identityNonce) return;
   if (event.data.type === "pugmoog-device-ready") {
     identityPopup.postMessage({
       type: "pugmoog-current-identity",
       nonce: identityNonce,
       identity: { userId: state.userId, secret: state.secret }
-    }, location.origin);
+    }, IDENTITY_BRIDGE_ORIGIN);
     return;
   }
   if (event.data.type !== "pugmoog-device-identity" || !validIdentity(event.data.identity)) return;

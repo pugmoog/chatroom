@@ -346,14 +346,14 @@ async function handle(req, res) {
   if (!cors(req, res)) throw apiError(403, "This API is only available through the Pugmoog website.");
   if (req.method === "OPTIONS") return res.writeHead(204).end();
   const url = new URL(req.url, "http://localhost");
-  if (!url.pathname.startsWith("/chat/api/")) throw apiError(404, "Not found.");
+  if (!url.pathname.startsWith("/chet/chat/api/")) throw apiError(404, "Not found.");
   cleanup();
 
-  if (req.method === "GET" && url.pathname === "/chat/api/health") return sendJson(res, 200, { ok: true });
+  if (req.method === "GET" && url.pathname === "/chet/chat/api/health") return sendJson(res, 200, { ok: true });
   const body = req.method === "POST" || req.method === "PATCH" || req.method === "DELETE" ? await readJson(req) : {};
   const method = typeof body._method === "string" ? body._method : req.method;
 
-  if (method === "POST" && url.pathname === "/chat/api/identity") {
+  if (method === "POST" && url.pathname === "/chet/chat/api/identity") {
     if (!/^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(body.userId || "") || !/^[a-f0-9]{64}$/.test(body.secret || "")) throw apiError(400, "Invalid browser identity format.");
     const existing = db.prepare("SELECT * FROM users WHERE id=?").get(body.userId);
     if (existing && !safeEqual(existing.secret_hash, hash(body.secret))) throw apiError(409, "That browser ID already exists.");
@@ -367,7 +367,7 @@ async function handle(req, res) {
 
   const user = authenticate(req, body);
 
-  const uploadMatch = url.pathname.match(/^\/chat\/api\/uploads\/([a-f0-9-]{36})\/(\d+)$/);
+  const uploadMatch = url.pathname.match(/^\/chet\/chat\/api\/uploads\/([a-f0-9-]{36})\/(\d+)$/);
   if (method === "POST" && uploadMatch) {
     const uploadId = uploadMatch[1];
     const index = Number(uploadMatch[2]);
@@ -388,19 +388,19 @@ async function handle(req, res) {
     return sendJson(res, 200, { received: index, total });
   }
 
-  if (method === "GET" && url.pathname === "/chat/api/me") {
+  if (method === "GET" && url.pathname === "/chet/chat/api/me") {
     const owned = db.prepare("SELECT name FROM chats WHERE owner_id=?").get(user.id);
     return sendJson(res, 200, { userId: user.id, displayName: user.display_name, ownedChat: owned?.name || null });
   }
 
-  if (method === "PATCH" && url.pathname === "/chat/api/me") {
+  if (method === "PATCH" && url.pathname === "/chet/chat/api/me") {
     const displayName = validateDisplayName(body.displayName);
     db.prepare("UPDATE users SET display_name=? WHERE id=?").run(displayName, user.id);
     broadcast("identity", { userId: user.id });
     return sendJson(res, 200, { userId: user.id, displayName });
   }
 
-  if (method === "POST" && url.pathname === "/chat/api/chats") {
+  if (method === "POST" && url.pathname === "/chet/chat/api/chats") {
     const name = validateChatName(body.name);
     const password = validatePassword(body.password);
     const displayName = validateDisplayName(body.displayName || user.display_name || "");
@@ -421,7 +421,7 @@ async function handle(req, res) {
     } catch (error) { db.exec("ROLLBACK"); throw error; }
   }
 
-  if (method === "POST" && url.pathname === "/chat/api/chats/join") {
+  if (method === "POST" && url.pathname === "/chet/chat/api/chats/join") {
     const { chat, alias } = resolveChat(body.name || "");
     const password = validatePassword(body.password);
     if (!passwordMatches(password, chat.password_salt, chat.password_hash)) throw apiError(401, "Incorrect chat password.");
@@ -431,7 +431,7 @@ async function handle(req, res) {
     return sendJson(res, 200, { chat: chatView(chat, user, alias), token, displayName });
   }
 
-  const chatMatch = url.pathname.match(/^\/chat\/api\/chats\/([^/]+)(?:\/(messages|events|rename|password|clear))?$/);
+  const chatMatch = url.pathname.match(/^\/chet\/chat\/api\/chats\/([^/]+)(?:\/(messages|events|rename|password|clear))?$/);
   if (chatMatch) {
     const requestedName = decodeURIComponent(chatMatch[1]);
     const action = chatMatch[2] || "details";
@@ -511,7 +511,7 @@ async function handle(req, res) {
     }
   }
 
-  if (method === "GET" && url.pathname === "/chat/api/personal") {
+  if (method === "GET" && url.pathname === "/chet/chat/api/personal") {
     const inbox = db.prepare(`SELECT p.id,p.sender_id AS senderId,p.recipient_id AS recipientId,p.text,p.image_file AS imageFile,
       p.reply_to_id AS replyToId,p.reply_context AS replyContext,p.created_at AS createdAt,p.expires_at AS expiresAt,u.display_name AS displayName
       FROM personal_messages p JOIN users u ON u.id=p.sender_id
@@ -524,7 +524,7 @@ async function handle(req, res) {
     return sendJson(res, 200, { messages: inbox, inbox, outbox, blocked: blocked.map(row => row.userId) });
   }
 
-  if (method === "POST" && url.pathname === "/chat/api/personal") {
+  if (method === "POST" && url.pathname === "/chet/chat/api/personal") {
     const recipientId = String(body.recipientId || "").toUpperCase();
     if (recipientId === user.id) throw apiError(400, "You cannot send a personal message to yourself.");
     if (!db.prepare("SELECT 1 FROM users WHERE id=? AND last_seen>?").get(recipientId, now() - USER_LIFETIME)) throw apiError(404, "Recipient ID was not found.");
@@ -552,20 +552,20 @@ async function handle(req, res) {
     return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, recipient: { userId: recipientId, displayName: recipient?.displayName || null } });
   }
 
-  if (method === "POST" && url.pathname === "/chat/api/blocks") {
+  if (method === "POST" && url.pathname === "/chet/chat/api/blocks") {
     const blockedId = String(body.userId || "").toUpperCase();
     if (blockedId === user.id || !db.prepare("SELECT 1 FROM users WHERE id=?").get(blockedId)) throw apiError(400, "Invalid user ID.");
     db.prepare("INSERT OR IGNORE INTO blocks(user_id,blocked_id,created_at) VALUES(?,?,?)").run(user.id, blockedId, now());
     return sendJson(res, 201, { blocked: blockedId });
   }
 
-  const blockMatch = url.pathname.match(/^\/chat\/api\/blocks\/([^/]+)$/);
+  const blockMatch = url.pathname.match(/^\/chet\/chat\/api\/blocks\/([^/]+)$/);
   if (method === "DELETE" && blockMatch) {
     db.prepare("DELETE FROM blocks WHERE user_id=? AND blocked_id=?").run(user.id, decodeURIComponent(blockMatch[1]).toUpperCase());
     return sendJson(res, 200, { unblocked: true });
   }
 
-  const imageMatch = url.pathname.match(/^\/chat\/api\/images\/([a-f0-9-]+\.jpg)$/);
+  const imageMatch = url.pathname.match(/^\/chet\/chat\/api\/images\/([a-f0-9-]+\.jpg)$/);
   if (method === "GET" && imageMatch) {
     const filename = path.basename(imageMatch[1]);
     let allowed = false;
