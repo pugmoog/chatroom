@@ -8,6 +8,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3040);
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), "data");
 const IMAGE_DIR = path.join(DATA_DIR, "images");
+const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(process.cwd(), "public");
 const ALLOWED_ORIGINS = new Set((process.env.ALLOWED_ORIGINS || "https://pugmoog.github.io,http://127.0.0.1:8767,http://localhost:8767").split(","));
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -161,6 +162,32 @@ function sendJson(res, status, value) {
   const body = JSON.stringify(value);
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Content-Length": Buffer.byteLength(body) });
   res.end(body);
+}
+
+const STATIC_FILES = new Map([
+  ["/chet/chat/", ["index.html", "text/html; charset=utf-8"]],
+  ["/chet/chat/index.html", ["index.html", "text/html; charset=utf-8"]],
+  ["/chet/chat/app.js", ["app.js", "text/javascript; charset=utf-8"]],
+  ["/chet/chat/recovery.js", ["recovery.js", "text/javascript; charset=utf-8"]],
+  ["/chet/chat/styles.css", ["styles.css", "text/css; charset=utf-8"]],
+  ["/chet/chat/device-identity.html", ["device-identity.html", "text/html; charset=utf-8"]],
+]);
+
+function serveStatic(req, res, pathname) {
+  const entry = STATIC_FILES.get(pathname);
+  if (!entry || !["GET", "HEAD"].includes(req.method)) return false;
+  const filePath = path.join(PUBLIC_DIR, entry[0]);
+  if (!fs.existsSync(filePath)) throw apiError(503, "Chat frontend is not installed.");
+  const size = fs.statSync(filePath).size;
+  res.writeHead(200, {
+    "Content-Type": entry[1],
+    "Content-Length": size,
+    "Cache-Control": entry[0].endsWith(".html") ? "no-store" : "public, max-age=300",
+    "X-Content-Type-Options": "nosniff",
+  });
+  if (req.method === "HEAD") res.end();
+  else fs.createReadStream(filePath).pipe(res);
+  return true;
 }
 
 async function readJson(req) {
@@ -343,9 +370,10 @@ function replyContext(replyToId, userId) {
 }
 
 async function handle(req, res) {
+  const url = new URL(req.url, "http://localhost");
+  if (serveStatic(req, res, url.pathname)) return;
   if (!cors(req, res)) throw apiError(403, "This API is only available through the Pugmoog website.");
   if (req.method === "OPTIONS") return res.writeHead(204).end();
-  const url = new URL(req.url, "http://localhost");
   if (!url.pathname.startsWith("/chet/chat/api/")) throw apiError(404, "Not found.");
   cleanup();
 
@@ -419,6 +447,13 @@ async function handle(req, res) {
       db.exec("COMMIT");
       return sendJson(res, 201, { chat: chatView(chat, user), token, displayName });
     } catch (error) { db.exec("ROLLBACK"); throw error; }
+  }
+
+  if (method === "POST" && url.pathname === "/chet/chat/api/chats/owned") {
+    const chat = db.prepare("SELECT * FROM chats WHERE owner_id=?").get(user.id);
+    if (!chat) throw apiError(404, "You do not own a chat.");
+    const token = createMembership(chat, user.id);
+    return sendJson(res, 200, { chat: chatView(chat, user), token });
   }
 
   if (method === "POST" && url.pathname === "/chet/chat/api/chats/join") {

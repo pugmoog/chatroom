@@ -11,6 +11,7 @@ let streamController = null;
 let toastTimer = null;
 let currentView = "home";
 let activeChat = null;
+let connectedThisOpening = false;
 
 function randomHex(bytes = 32) {
   const data = crypto.getRandomValues(new Uint8Array(bytes));
@@ -51,8 +52,8 @@ function loadState() {
 
 let state = loadState();
 const saveState = () => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  refreshIdentityCookie(state);
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+  if (state.deviceLinked) refreshIdentityCookie(state);
 };
 saveState();
 
@@ -91,9 +92,9 @@ async function establishIdentity() {
     saveState();
   } catch (error) {
     if (error.status === 409 || error.status === 401) {
-      state = { userId: randomUserId(), secret: randomHex(), displayName: "", ownedChat: null, chats: [], contacts: [], deviceLinked: false };
-      saveState();
-      deviceConnectionView("The saved identity could not be verified. Connect this device again to make a new one.");
+      connectedThisOpening = false;
+      deviceConnectionView(error.message);
+      throw error;
     } else throw error;
   }
 }
@@ -102,7 +103,7 @@ function validIdentity(identity) {
   return /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){3}$/.test(identity?.userId || "") && /^[a-f0-9]{64}$/.test(identity?.secret || "");
 }
 
-function deviceConnectionView(message = "Safari keeps iframe storage separate for every website. Connect once here so Chatroom can copy this device's ID into the current website.") {
+function deviceConnectionView(message = "Your saved ID is checked with Pugmoog each time you open Chatroom.") {
   stopLive();
   currentView = "device-connect";
   activeChat = null;
@@ -110,11 +111,10 @@ function deviceConnectionView(message = "Safari keeps iframe storage separate fo
   setActiveNav("");
   app.innerHTML = `
     <section class="center-card hero">
-      <p class="eyebrow">One ID on this browser</p>
-      <h1>Connect this device</h1>
-      <p>${escapeHtml(message)}</p>
-      <div class="actions"><button class="primary" data-action="connect-device">Connect this device</button></div>
-      <p class="hint" style="margin-top:16px">A small Pugmoog window will open, connect the ID, and close itself. Your secret key is never shown to the website containing Bugmoog.</p>
+      <h1>Chatroom needs to reconnect</h1>
+      <p>Connect to open your chats.</p>
+      <div class="actions"><button class="primary" data-action="connect-device">${state.deviceLinked ? "Reconnect" : "Connect"}</button></div>
+      <details><summary>Advanced</summary><p>${escapeHtml(message)}</p><p>A Pugmoog window checks your saved identity. Browser storage can differ between websites.</p><a href="https://pugmoog.github.io/chatroom/device-identity.html?manage=1" target="_blank" rel="noopener">Save or restore a recovery file</a></details>
     </section>`;
 }
 
@@ -161,10 +161,16 @@ async function finishDeviceIdentity(identity) {
   try {
     await establishIdentity();
     if (state.deviceLinked) {
+      connectedThisOpening = true;
+      if (state.ownedChat) {
+        const result = await api("/chats/owned", { method: "POST" });
+        storeChat(result.chat, result.token);
+      }
       homeView();
       showToast(changed ? "This website now uses your device ID." : "This device ID is connected.");
     }
   } catch (error) {
+    connectedThisOpening = false;
     deviceConnectionView(error.message);
     showToast(error.message, true);
   }
@@ -974,6 +980,10 @@ function makeStoredZip(data) {
 
 document.addEventListener("click", event => {
   const action = event.target.closest("[data-action]")?.dataset.action;
+  if (!connectedThisOpening && action !== "connect-device" && (action || event.target.closest("[data-open-chat]"))) {
+    deviceConnectionView();
+    return;
+  }
   if (action === "home") homeView();
   if (action === "personal") personalView();
   if (action === "create") openDialog("#create-dialog");
@@ -1057,16 +1067,12 @@ document.querySelector("#join-form").addEventListener("submit", async event => {
 
 window.addEventListener("pagehide", stopLive);
 setInterval(() => {
-  if (state.deviceLinked) api("/me").catch(() => {});
+  if (connectedThisOpening) api("/me").catch(() => {});
 }, 5 * 60 * 1000);
 
 try {
   if (location.hash === "#device-identity") history.replaceState(null, "", `${location.pathname}${location.search}`);
-  if (!state.deviceLinked) deviceConnectionView();
-  else {
-    await establishIdentity();
-    if (state.deviceLinked) homeView();
-  }
+  deviceConnectionView();
 } catch (error) {
   app.innerHTML = `<section class="center-card"><h1>Could not connect</h1><p>${escapeHtml(error.message)}</p><button class="secondary" onclick="location.reload()">Try again</button></section>`;
 }

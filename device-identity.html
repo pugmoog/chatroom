@@ -25,6 +25,10 @@
   </main>
   <script>
     (() => {
+      if (new URLSearchParams(location.search).has('manage')) {
+        import('./recovery.js?v=1');
+        return;
+      }
       const COOKIE_NAME = 'pugmoog_device_identity';
       const STORAGE_KEY = 'pugmoog-device-identity-v1';
       const ALLOWED_OPENERS = new Set([
