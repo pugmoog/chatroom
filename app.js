@@ -137,19 +137,9 @@ async function finishDeviceIdentity(identity) {
   const popup = identityPopup;
   const nonce = identityNonce;
   const changed = identity.userId !== state.userId || identity.secret !== state.secret;
-  const locallyOwnedChat = state.ownedChat || state.chats.find(chat => chat.owner)?.name;
-  if (changed && locallyOwnedChat) {
-    const replace = confirm(`This website currently has the ID that owns “${locallyOwnedChat}”. Connecting will replace it with this device's main ID. Continue?`);
-    if (!replace) {
-      try { popup.postMessage({ type: "pugmoog-device-cancel", nonce }, IDENTITY_BRIDGE_ORIGIN); } catch {}
-      try { popup.close(); } catch {}
-      stopIdentityConnection();
-      deviceConnectionView("Nothing was changed. Connect when you are ready to use this device's main ID here.");
-      return;
-    }
-  }
-
   if (changed) {
+    // Keep the previous identity and its chat access for possible recovery.
+    try { localStorage.setItem(`${STORAGE_KEY}-backup-${state.userId}`, JSON.stringify(state)); } catch {}
     state = { userId: identity.userId, secret: identity.secret, displayName: "", ownedChat: null, chats: [], contacts: [], deviceLinked: true };
   } else {
     state.deviceLinked = true;
