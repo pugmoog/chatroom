@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { moderation } from './moderation.js';
 
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 3040);
@@ -86,6 +87,7 @@ db.exec(`
   );
 `);
 const personalColumns = new Set(db.prepare("PRAGMA table_info(personal_messages)").all().map(column => column.name));
+const mod = moderation(db, DATA_DIR, apiError);
 if (!personalColumns.has("reply_to_id")) db.exec("ALTER TABLE personal_messages ADD COLUMN reply_to_id TEXT");
 if (!personalColumns.has("reply_context")) db.exec("ALTER TABLE personal_messages ADD COLUMN reply_context TEXT");
 
@@ -209,6 +211,7 @@ function authenticate(req, body = {}) {
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user || !safeEqual(hash(secret), user.secret_hash)) throw apiError(401, "Browser identity is invalid or expired.");
   db.prepare("UPDATE users SET last_seen = ? WHERE id = ?").run(now(), id);
+  mod.recordIP(req, id);
   return user;
 }
 
@@ -224,6 +227,7 @@ function resolveChat(name) {
 function authenticateChat(req, body, name) {
   const user = authenticate(req, body);
   const { chat, alias } = resolveChat(name);
+  mod.blocked(chat.id, user.id);
   const token = body._auth?.chatToken || req.headers["x-chat-token"];
   const membership = db.prepare("SELECT * FROM memberships WHERE chat_id = ? AND user_id = ?").get(chat.id, user.id);
   if (!membership || typeof token !== "string" || !safeEqual(hash(token), membership.token_hash) || membership.credential_version !== chat.credential_version) {
@@ -395,6 +399,16 @@ async function handle(req, res) {
 
   const user = authenticate(req, body);
 
+  if (method === 'POST' && url.pathname === '/chet/chat/api/admin/login') return sendJson(res,200,await mod.login(body,user.id));
+  if (method === 'POST' && url.pathname === '/chet/chat/api/admin/users') {
+    await mod.admin(body);
+    return sendJson(res,200,{users:mod.users(body)});
+  }
+  if (method === 'GET' && url.pathname === '/chet/chat/api/status') {
+    const chats = db.prepare(`SELECT c.id,c.name,MAX(CASE WHEN m.sender_id<>? THEN m.created_at ELSE 0 END) AS latest FROM memberships s JOIN chats c ON c.id=s.chat_id LEFT JOIN chat_messages m ON m.chat_id=c.id AND m.expires_at>? WHERE s.user_id=? AND s.credential_version=c.credential_version AND NOT EXISTS(SELECT 1 FROM chat_blocks b WHERE b.chat_id=c.id AND b.user_id=?) GROUP BY c.id`).all(user.id,now(),user.id,user.id);
+    return sendJson(res,200,{moderation:mod.status(user.id),chats});
+  }
+
   const uploadMatch = url.pathname.match(/^\/chet\/chat\/api\/uploads\/([a-f0-9-]{36})\/(\d+)$/);
   if (method === "POST" && uploadMatch) {
     const uploadId = uploadMatch[1];
@@ -458,6 +472,7 @@ async function handle(req, res) {
 
   if (method === "POST" && url.pathname === "/chet/chat/api/chats/join") {
     const { chat, alias } = resolveChat(body.name || "");
+    mod.blocked(chat.id,user.id);
     const password = validatePassword(body.password);
     if (!passwordMatches(password, chat.password_salt, chat.password_hash)) throw apiError(401, "Incorrect chat password.");
     const displayName = validateDisplayName(body.displayName || user.display_name || "");
@@ -466,7 +481,7 @@ async function handle(req, res) {
     return sendJson(res, 200, { chat: chatView(chat, user, alias), token, displayName });
   }
 
-  const chatMatch = url.pathname.match(/^\/chet\/chat\/api\/chats\/([^/]+)(?:\/(messages|events|rename|password|clear))?$/);
+  const chatMatch = url.pathname.match(/^\/chet\/chat\/api\/chats\/([^/]+)(?:\/(messages|events|rename|password|clear|blocks))?$/);
   if (chatMatch) {
     const requestedName = decodeURIComponent(chatMatch[1]);
     const action = chatMatch[2] || "details";
@@ -496,6 +511,8 @@ async function handle(req, res) {
       const last = db.prepare("SELECT text,image_file AS imageFile,created_at AS sentAt FROM chat_messages WHERE sender_id=? ORDER BY created_at DESC LIMIT 1").get(user.id);
       const wait = last ? messageCooldownMs(last.text?.length || 0, !!last.imageFile) - (now() - last.sentAt) : 0;
       if (wait > 0) throw apiError(429, "Wait before sending another chat message.", { retryAfterMs: wait });
+      const found = mod.enforce(user.id,'chat',text,body.acknowledgedWords);
+      mod.refuseSevere(user.id,'chat',found);
       const jpeg = consumeImage(body, user.id);
       const imageFile = saveImage(jpeg);
       const time = now();
@@ -504,10 +521,27 @@ async function handle(req, res) {
       catch (error) { if (imageFile) removeFiles([{ image_file: imageFile }]); throw error; }
       scheduleExpiryCleanup();
       broadcast("chat-message", { chatId: auth.chat.id });
-      return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME });
+      const moderation = mod.apply(user.id,'chat',found,messageCooldownMs(text.length,!!imageFile));
+      return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, moderation });
     }
 
     if (auth.chat.owner_id !== user.id) throw apiError(403, "Only the chat owner may do that.");
+
+    if (action === 'blocks') {
+      if (method === 'GET') return sendJson(res,200,{blocked:db.prepare('SELECT b.user_id AS userId,u.display_name AS displayName FROM chat_blocks b JOIN users u ON u.id=b.user_id WHERE b.chat_id=?').all(auth.chat.id)});
+      const target = String(body.userId || '').toUpperCase();
+      if (target === user.id || !db.prepare('SELECT 1 FROM users WHERE id=?').get(target)) throw apiError(400,'Choose another valid user ID.');
+      if (method === 'POST') {
+        db.prepare('INSERT OR IGNORE INTO chat_blocks VALUES(?,?)').run(auth.chat.id,target);
+        db.prepare('DELETE FROM memberships WHERE chat_id=? AND user_id=?').run(auth.chat.id,target);
+        for (const client of sseClients) if (client.chatId===auth.chat.id && client.userId===target) {client.res.end(); sseClients.delete(client);}
+        return sendJson(res,200,{blocked:true});
+      }
+      if (method === 'DELETE') {
+        db.prepare('DELETE FROM chat_blocks WHERE chat_id=? AND user_id=?').run(auth.chat.id,target);
+        return sendJson(res,200,{unblocked:true});
+      }
+    }
 
     if (method === "PATCH" && action === "rename") {
       const name = validateChatName(body.name);
@@ -575,6 +609,8 @@ async function handle(req, res) {
       if (wait > 0) throw apiError(429, "Wait before sending another personal message.", { retryAfterMs: wait });
     }
     const reply = replyContext(body.replyToId || null, user.id);
+    const found = mod.enforce(user.id,'personal',text,body.acknowledgedWords);
+    mod.refuseSevere(user.id,'personal',found);
     const jpeg = consumeImage(body, user.id);
     const imageFile = saveImage(jpeg);
     const id = randomId();
@@ -584,7 +620,8 @@ async function handle(req, res) {
     scheduleExpiryCleanup();
     broadcast("personal-message", { userId: recipientId });
     const recipient = db.prepare("SELECT display_name AS displayName FROM users WHERE id=?").get(recipientId);
-    return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, recipient: { userId: recipientId, displayName: recipient?.displayName || null } });
+    const moderation = mod.apply(user.id,'personal',found,messageCooldownMs(text.length,!!imageFile));
+    return sendJson(res, 201, { id, createdAt: time, expiresAt: time + MESSAGE_LIFETIME, moderation, recipient: { userId: recipientId, displayName: recipient?.displayName || null } });
   }
 
   if (method === "POST" && url.pathname === "/chet/chat/api/blocks") {

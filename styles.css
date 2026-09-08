@@ -133,3 +133,15 @@ dialog::backdrop { background: rgba(0, 0, 0, .45); }
   .image-preview img { width: 46px; height: 46px; }
   .image-preview button { grid-column: 1 / -1; }
 }
+.moderation-banner { background:#fff4d2; border:1px solid #d9b751; border-radius:7px; padding:9px 12px; margin-bottom:14px; font-size:.82rem; line-height:1.4; }
+.moderation-banner details { margin-top:3px; }
+.unread-dot { display:inline-block; width:8px; height:8px; margin-left:7px; border-radius:50%; background:#c92335; }
+.unread-dot[hidden], #moderation-countdown[hidden] { display:none; }
+#moderation-countdown { color:#a52222; font-variant-numeric:tabular-nums; font-size:.75rem; max-width:240px; }
+.moderation-dialog { max-width:min(90vw,550px); padding:24px; border:2px solid #333; border-radius:10px; }
+.moderation-dialog form { display:flex; gap:10px; flex-wrap:wrap; margin-top:15px; }
+.admin-dialog { max-width:95vw; width:950px; }
+.admin-dialog [hidden] { display:none; }
+.admin-dialog table { border-collapse:collapse; width:100%; font-size:.8rem; }
+.admin-dialog td,.admin-dialog th { padding:7px; border-bottom:1px solid #ccc; text-align:left; overflow-wrap:anywhere; }
+#admin-results { overflow:auto; }

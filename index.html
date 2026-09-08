@@ -30,7 +30,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="styles.css?v=5">
+  <link rel="stylesheet" href="styles.css?v=6">
 </head>
 <body>
   <div class="shell">
@@ -39,6 +39,7 @@
         <span class="brand-mark">P</span><span>Pugmoog Chat</span>
       </button>
       <nav>
+        <small id="moderation-countdown" role="status" hidden></small>
         <button data-action="home">Chats</button>
         <button data-action="personal">Personal</button>
         <button data-action="identity" class="identity-button">My ID</button>
@@ -92,6 +93,6 @@
   </dialog>
 
   <div id="toast" class="toast" role="status"></div>
-  <script type="module">if (!window.__PUGMOOG_BLOCKED__) import('./app.js?v=9');</script>
+  <script type="module">if (!window.__PUGMOOG_BLOCKED__) import('./app.js?v=10');</script>
 </body>
 </html>

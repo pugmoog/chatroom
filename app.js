@@ -76,6 +76,12 @@ async function api(path, options = {}) {
     body: requestBody(options.body, options.chatToken, method)
   });
   const data = await response.json().catch(() => ({}));
+  if (data.moderation) updateModeration(data.moderation);
+  if (response.status === 428 && data.wordWarning && !options.warned) {
+    const accepted = await wordConfirmation(data);
+    if (!accepted) throw new Error('Message not sent.');
+    return api(path,{...options,warned:true,body:JSON.stringify({...JSON.parse(options.body || '{}'),acknowledgedWords:data.wordWarning.map(item=>item.word)})});
+  }
   if (!response.ok) {
     const error = new Error(data.error || `Request failed (${response.status}).`);
     Object.assign(error, data, { status: response.status });
@@ -157,6 +163,7 @@ async function finishDeviceIdentity(identity) {
         storeChat(result.chat, result.token);
       }
       homeView();
+      await syncStatus();
       showToast(changed ? "This website now uses your device ID." : "This device ID is connected.");
     }
   } catch (error) {
@@ -262,7 +269,7 @@ function stopLive() {
 
 function chatTile(chat) {
   const index = state.chats.indexOf(chat);
-  return `<button class="chat-tile" data-open-chat="${index}"><strong>${escapeHtml(chat.name)}</strong><small>${chat.owner ? "Owned by you" : "Joined chat"}</small></button>`;
+  return `<button class="chat-tile" data-open-chat="${index}"><strong>${escapeHtml(chat.name)}<span class="unread-dot" aria-label="New messages" ${chat.unread ? '' : 'hidden'}></span></strong><small>${chat.owner ? "Owned by you" : "Joined chat"}</small></button>`;
 }
 
 function homeView() {
@@ -279,6 +286,7 @@ function homeView() {
       ? `<div class="empty">You own <strong>${escapeHtml(state.ownedChat)}</strong>, but its saved access is missing from this browser.</div>`
       : '<div class="empty">You have not made a chat yet.</div>';
   app.innerHTML = `
+    <aside class="moderation-banner">Swear words and bad words are not allowed. You can be blocked from any chat or personal message contact, and there are increasingly large timeouts if you say bad words. Serious or repeated abuse may result in restricted access. Your ID is shown with every message you send.<details><summary>Privacy</summary>Connection IP addresses and serious-word counts are recorded for private administrator review. An IP address can be shared by many people and does not identify a person.</details></aside>
     <section class="center-card hero">
       <h1>Chatroom</h1>
       <p>Make a chat, or join one with its name and password. Messages and images disappear after 48 hours.</p>
@@ -327,13 +335,14 @@ async function openChat(ref) {
     ref.owner = data.chat.isOwner;
     saveState();
     renderChat(data.chat, data.messages);
+    markRead(ref, data.messages);
     startChatLive(ref);
   } catch (error) {
     if (error.logout) {
       state.chats = state.chats.filter(item => item.id !== ref.id);
       saveState();
       homeView();
-      showToast("That chat password changed. Join again with the new password.", true);
+      showToast(error.message, true);
     } else {
       homeView();
       showToast(error.message, true);
@@ -386,11 +395,17 @@ function ownerSettings(chat) {
       <form id="rename-form"><h3>Rename chat</h3><input name="name" maxlength="50" value="${escapeHtml(chat.name)}" required><button class="secondary" type="submit">Rename</button></form>
       <form id="password-form"><h3>Change password</h3><input name="password" type="password" minlength="4" maxlength="128" required><button class="secondary" type="submit">Change password</button></form>
       <form id="clear-form"><h3>Clear messages</h3><p class="hint">Permanently removes every message and image.</p><button class="danger" type="submit">Clear everything</button></form>
+      <form id="chat-block-form"><h3>Blocked users</h3><input name="userId" placeholder="User ID" required><button type="submit" class="danger">Block from chat</button><div id="chat-blocks"></div></form>
     </div>
   </details>`;
 }
 
 function bindOwnerSettings() {
+  document.querySelector('#chat-block-form')?.addEventListener('submit',async event=>{
+    event.preventDefault();
+    try {await api(`/chats/${encodeURIComponent(activeChat.name)}/blocks`,{method:'POST',chatToken:activeChat.token,body:JSON.stringify({userId:event.target.elements.userId.value.trim()})});event.target.reset();await loadChatBlocks();} catch(error){showToast(error.message,true);}
+  });
+  if (document.querySelector('#chat-blocks')) loadChatBlocks();
   document.querySelector("#rename-form")?.addEventListener("submit", async event => {
     event.preventDefault();
     try {
@@ -516,13 +531,14 @@ async function refreshChat() {
     const container = document.querySelector("#messages");
     const nearBottom = container && container.scrollHeight - container.scrollTop - container.clientHeight < 100;
     appendMessages(data.messages, activeChat.token, false);
+    markRead(activeChat,data.messages);
     if (nearBottom && container) container.scrollTop = container.scrollHeight;
   } catch (error) {
     if (error.logout) {
       state.chats = state.chats.filter(item => item.id !== activeChat.id);
       saveState();
       homeView();
-      showToast("The chat password changed. Join again.", true);
+      showToast(error.message, true);
     }
   }
 }
@@ -1055,6 +1071,99 @@ document.querySelector("#join-form").addEventListener("submit", async event => {
   finally { button.disabled = false; }
 });
 
+let moderationClock = {globalUntil:0,chatUntil:0,personalUntil:0};
+let serverOffset = 0;
+function updateModeration(value) {
+  serverOffset = value.serverNow - Date.now();
+  moderationClock = value;
+  try {localStorage.setItem(`chatroom-cooldowns-${state.userId}`,JSON.stringify(value));} catch {}
+  renderCountdown();
+}
+function renderCountdown() {
+  const node = document.querySelector('#moderation-countdown');
+  if (!node) return;
+  const time = Date.now()+serverOffset;
+  const parts = [['All messages',moderationClock.globalUntil],['Chats',moderationClock.chatUntil],['Personal',moderationClock.personalUntil]].filter(([,until])=>until>time).map(([label,until])=>{
+    let seconds=Math.ceil((until-time)/1000);
+    const days=Math.floor(seconds/86400); seconds%=86400;
+    const hours=Math.floor(seconds/3600); seconds%=3600;
+    const minutes=Math.floor(seconds/60); seconds%=60;
+    return `${label}: ${days ? days+'d ' : ''}${String(hours).padStart(2,'0')}:${String(minutes).padStart(2,'0')}:${String(seconds).padStart(2,'0')}`;
+  });
+  node.textContent=parts.join(' · '); node.hidden=!parts.length;
+}
+function wordConfirmation(data) {
+  return new Promise(resolve=>{
+    const dialog=document.createElement('dialog'); dialog.className='moderation-dialog';
+    const words=data.wordWarning.map(item=>item.word).join(', ');
+    dialog.innerHTML=`<h2>Check your message</h2><p>${escapeHtml(words)} ${data.wordWarning.length===1?'is a bad word':'are bad words'}. Are you sure you want to send this message?</p><p>${data.level===5?'This message cannot be sent. Continuing starts a two-day timeout.':'Sending starts a '+formatDuration(data.timeoutMs/1000)+' timeout across chats and personal messages.'}</p><form method="dialog"><button value="cancel">Cancel</button><button value="send">${data.level===5?'Continue':'Send anyway'}</button></form>`;
+    document.body.append(dialog);
+    dialog.addEventListener('close',()=>{const accepted=dialog.returnValue==='send';dialog.remove();resolve(accepted);},{once:true});
+    dialog.showModal();
+  });
+}
+async function loadChatBlocks() {
+  try {
+    const ref=activeChat;
+    const result=await api(`/chats/${encodeURIComponent(ref.name)}/blocks`,{chatToken:ref.token});
+    const node=document.querySelector('#chat-blocks');if (!node || ref!==activeChat)return;
+    node.replaceChildren();
+    for(const person of result.blocked){
+      const row=document.createElement('p');row.textContent=`${person.displayName||'Unnamed'} · ${person.userId} `;
+      const button=document.createElement('button');button.type='button';button.textContent='Unblock';
+      button.onclick=async()=>{try{await api(`/chats/${encodeURIComponent(ref.name)}/blocks`,{method:'DELETE',chatToken:ref.token,body:JSON.stringify({userId:person.userId})});await loadChatBlocks();}catch(error){showToast(error.message,true);}};
+      row.append(button);node.append(row);
+    }
+  }catch(error){showToast(error.message,true);}
+}
+function markRead(ref,messages){
+  if(document.visibilityState!=='visible')return;
+  ref.readThrough=Math.max(ref.readThrough||0,...messages.map(m=>m.createdAt)); ref.unread=false;saveState();
+}
+async function syncStatus(){
+  if(!connectedThisOpening)return;
+  try{
+    const result=await api('/status');
+    for(const chat of state.chats){const remote=result.chats.find(c=>c.id===chat.id);chat.unread=!!remote && remote.latest>(chat.readThrough||0);}
+    saveState();
+    document.querySelectorAll('[data-open-chat]').forEach(button=>{const dot=button.querySelector('.unread-dot');if(dot)dot.hidden=!state.chats[Number(button.dataset.openChat)]?.unread;});
+  }catch{}
+}
+const adminKeys=new Set();
+let adminOpen=false;
+window.addEventListener('blur',()=>adminKeys.clear());
+window.addEventListener('keyup',event=>adminKeys.delete(event.key.toLowerCase()));
+window.addEventListener('keydown',event=>{
+  if(event.target.closest('input,textarea,[contenteditable="true"]'))return;
+  adminKeys.add(event.key.toLowerCase());
+  if(connectedThisOpening && !adminOpen && [...'admin'].every(k=>adminKeys.has(k))){event.preventDefault();adminKeys.clear();openAdmin();}
+});
+function openAdmin(){
+  adminOpen=true;let token='';
+  const dialog=document.createElement('dialog');dialog.className='moderation-dialog admin-dialog';
+  dialog.innerHTML='<form method="dialog"><button>Close</button></form><h2>Administrator</h2><form id="admin-login"><label>Passcode <input name="password" type="password" autocomplete="current-password" required></label><button>Sign in</button></form><form id="admin-search" hidden><input name="query" placeholder="ID, IP, or display name"><label>Minimum level 4 + 5 count <input name="minCount" type="number" min="0" value="0"></label><button>Search</button></form><p class="hint">Private moderation data. Shared IP addresses do not identify individual people. Counts are listed level-4/5 word occurrences in accepted or refused attempts, not unconfirmed drafts. Up to 500 results.</p><p id="admin-error" role="status"></p><div id="admin-results"></div>';
+  document.body.append(dialog);dialog.showModal();
+  dialog.addEventListener('close',()=>{token='';adminOpen=false;dialog.remove();});
+  const search=dialog.querySelector('#admin-search');
+  const query=async()=>{
+    try{
+      const result=await api('/admin/users',{method:'POST',body:JSON.stringify({adminToken:token,query:search.elements.query.value,minCount:Number(search.elements.minCount.value)})});
+      const root=dialog.querySelector('#admin-results');root.replaceChildren();
+      const table=document.createElement('table');table.innerHTML='<thead><tr><th>ID</th><th>Name</th><th>IPs</th><th>Level 4</th><th>Level 5</th></tr></thead>';
+      for(const user of result.users){const tr=document.createElement('tr');for(const value of [user.id,user.displayName||'',user.ips.map(i=>i.ip).join(', '),user.level4,user.level5]){const td=document.createElement('td');td.textContent=value;tr.append(td);}table.append(tr);}root.append(table);
+      dialog.querySelector('#admin-error').textContent='';
+    }catch(error){dialog.querySelector('#admin-error').textContent=error.message;}
+  };
+  dialog.querySelector('#admin-login').onsubmit=async event=>{
+    event.preventDefault();const form=event.target;
+    try{const result=await api('/admin/login',{method:'POST',body:JSON.stringify({password:form.elements.password.value})});token=result.adminToken;form.reset();form.hidden=true;search.hidden=false;await query();}catch(error){dialog.querySelector('#admin-error').textContent=error.message;}
+  };
+  search.onsubmit=event=>{event.preventDefault();query();};
+}
+try {moderationClock=JSON.parse(localStorage.getItem(`chatroom-cooldowns-${state.userId}`))||moderationClock;}catch{}
+setInterval(renderCountdown,1000);
+setInterval(syncStatus,10000);
+window.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){syncStatus();if(activeChat)refreshChat();}});
 window.addEventListener("pagehide", stopLive);
 setInterval(() => {
   if (connectedThisOpening) api("/me").catch(() => {});
